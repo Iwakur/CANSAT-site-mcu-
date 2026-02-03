@@ -1,189 +1,378 @@
 <!doctype html>
+
 <html lang="fr">
+
     <head>
+
         <meta charset="UTF-8" />
+
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
         <title>MCU – Programmation & Analyse</title>
 
+
+
         <link rel="stylesheet" href="../../style.css" />
+
         <link rel="stylesheet" href="spec.css" />
+
     </head>
 
+
+
     <body>
-        <script src="../../includes/navbar.js\"></script>
+
+        <script src="../../includes/navbar.js"></script>
+
+
 
         <div class="container">
 
+
+
             <!-- HERO -->
+
             <header class="hero">
+
                 <h1>Marché des MCU</h1>
+
                 <p>
+
                     Cette page décrit les principes fondamentaux de
+
                     programmation,
+
                     de contrôle et d’analyse pour microcontrôleurs modernes.
+
                     L’objectif est de produire des systèmes
+
                     <strong>stables</strong>, <strong>prévisibles</strong> et
+
                     <strong>observables</strong>.
+
                 </p>
+
             </header>
+
+
 
             <main class="article">
 
+
+
                 <!-- COMPATIBILITY -->
+
                 <section class="section">
+
                     <h2>MCU compatibles</h2>
+
                     <p>
+
                         Les concepts présentés ici sont valables pour les
+
                         plateformes
+
                         suivantes :
+
                     </p>
+
                     <ul>
+
                         <li>Wemos D1 mini (ESP8266)</li>
+
                         <li>ESP8266 (Arduino core)</li>
+
                         <li>ESP32 (dual-core, FreeRTOS)</li>
+
                     </ul>
+
                     <p>
+
                         Bien que les implémentations diffèrent, les modèles de
+
                         contrôle
+
                         (boucle principale, interruptions, timers) restent
+
                         identiques.
+
                     </p>
+
                 </section>
+
+
 
                 <!-- IMAGE: BOARDS -->
+
                 <section class="section">
+
                     <h2>Plateformes matérielles</h2>
 
+
+
                     <div class="image-grid">
-                        <figure>
-                            <div class="img-placeholder">Image Wemos D1
-                                mini</div>
-                            <figcaption>Wemos D1 mini (ESP8266)</figcaption>
-                        </figure>
 
                         <figure>
-                            <div class="img-placeholder">Image ESP32</div>
-                            <figcaption>ESP32 Dev Module</figcaption>
+
+                            <div class="img-placeholder">Image Wemos D1
+
+                                mini</div>
+
+                            <figcaption>Wemos D1 mini (ESP8266)</figcaption>
+
                         </figure>
+
+
+
+                        <figure>
+
+                            <div class="img-placeholder">Image ESP32</div>
+
+                            <figcaption>ESP32 Dev Module</figcaption>
+
+                        </figure>
+
                     </div>
+
                 </section>
+
+
 
                 <!-- MAIN LOOP -->
+
                 <section class="section">
+
                     <h2>Boucle principale</h2>
+
                     <p>
+
                         Le modèle de base repose sur une boucle infinie exécutée
+
                         par le CPU.
+
                         Elle orchestre la lecture des entrées, la mise à jour de
+
                         l’état
+
                         interne et la génération des sorties.
-                    </p>
-                    <p>
-                        Ce modèle est simple, robuste et très utilisé sur
-                        ESP8266.
-                        Sur ESP32, il cohabite souvent avec un scheduler
-                        (FreeRTOS).
+
                     </p>
 
+                    <p>
+
+                        Ce modèle est simple, robuste et très utilisé sur
+
+                        ESP8266.
+
+                        Sur ESP32, il cohabite souvent avec un scheduler
+
+                        (FreeRTOS).
+
+                    </p>
+
+
+
                     <figure class="image-block">
+
                         <div class="img-placeholder">Diagramme boucle
+
                             principale</div>
+
                         <figcaption>Cycle typique de la boucle
+
                             principale</figcaption>
+
                     </figure>
+
                 </section>
+
+
 
                 <!-- INTERRUPTS -->
+
                 <section class="section">
+
                     <h2>Interruptions & timers</h2>
+
                     <p>
+
                         Les interruptions permettent de réagir à des événements
+
                         asynchrones : timers, communication série, GPIO, réseau.
-                    </p>
-                    <p>
-                        Une routine d’interruption doit être
-                        <strong>courte</strong> et
-                        <strong>déterministe</strong>.
-                        Elle signale l’événement et délègue le traitement à la
-                        boucle
-                        principale ou à une tâche.
+
                     </p>
 
+                    <p>
+
+                        Une routine d’interruption doit être
+
+                        <strong>courte</strong> et
+
+                        <strong>déterministe</strong>.
+
+                        Elle signale l’événement et délègue le traitement à la
+
+                        boucle
+
+                        principale ou à une tâche.
+
+                    </p>
+
+
+
                     <figure class="image-block">
+
                         <div class="img-placeholder">Diagramme
+
                             interruption</div>
+
                         <figcaption>Interaction entre ISR et programme
+
                             principal</figcaption>
+
                     </figure>
+
                 </section>
+
+
 
                 <!-- HARDWARE CONTROL -->
+
                 <section class="section">
+
                     <h2>Contrôle matériel</h2>
+
                     <p>
+
                         Les périphériques MCU (GPIO, ADC, PWM, UART) sont
+
                         pilotés via
+
                         des registres ou des abstractions logicielles.
+
                         Une configuration correcte permet au matériel de
+
                         fonctionner
+
                         de manière autonome.
+
                     </p>
+
                     <p>
+
                         Cela réduit la charge CPU et améliore la précision
+
                         temporelle,
+
                         en particulier pour les signaux PWM et les timers.
+
                     </p>
+
                 </section>
+
+
 
                 <!-- ANALYTICS -->
+
                 <section class="section">
+
                     <h2>Analyse & visualisation</h2>
+
                     <p>
+
                         Les données collectées peuvent être exploitées de deux
+
                         façons :
+
                     </p>
+
                     <ul>
+
                         <li><strong>Analyse en temps réel</strong> : monitoring
+
                             live,
+
                             supervision, détection immédiate</li>
+
                         <li><strong>Analyse historique</strong> : tendances,
+
                             diagnostic,
+
                             comparaison dans le temps</li>
+
                     </ul>
 
+
+
                     <figure class="image-block">
+
                         <div class="img-placeholder">Graphiques temps réel /
+
                             historique</div>
+
                         <figcaption>Visualisation des données MCU</figcaption>
+
                     </figure>
+
                 </section>
+
+
 
                 <!-- MINI EXAMPLE -->
+
                 <section class="section">
+
                     <h2>Exemple conceptuel</h2>
+
                     <p>
+
                         Un capteur est échantillonné à intervalle fixe. Les
+
                         valeurs sont
+
                         traitées puis envoyées vers une sortie ou un système
+
                         d’analyse.
+
                     </p>
 
+
+
                     <div class="code">
+
                         toutes les 10 ms (timer)<br>
+
                         → lire capteur<br>
+
                         → traiter la mesure<br>
+
                         → mettre à jour sortie / buffer<br>
+
                     </div>
+
                 </section>
 
+
+
                 <!-- NAV -->
+
                 <div class="footer-links">
+
                     <a class="btn" href="../general.html">← Retour General</a>
+
                     <a class="btn" href="use-cases.html">Cas d’utilisation →</a>
+
                 </div>
 
+
+
             </main>
+
         </div>
 
+
+
     </body>
+
 </html>
+
