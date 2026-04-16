@@ -35,6 +35,7 @@ class RFM69:
     MODE_SLEEP = 0x00
     MODE_STDBY = 0x04
     MODE_TX = 0x0C
+    MODE_RX = 0x10
     EXPECTED_VERSION = 0x24
 
     def __init__(
@@ -97,6 +98,13 @@ class RFM69:
         self.spi.write(data)
         self._unselect()
 
+    def _burst_read(self, reg, length):
+        self._select()
+        self.spi.write(bytes([reg & 0x7F]))
+        data = self.spi.read(length, 0x00)
+        self._unselect()
+        return data
+
     # -------------------------
     # Config helpers
     # -------------------------
@@ -123,6 +131,11 @@ class RFM69:
         utime.sleep_ms(1)
         self.rst.value(0)
         utime.sleep_ms(20)
+
+    def _clear_fifo(self):
+        self._set_mode(self.MODE_STDBY)
+        self._write_reg(self.REG_IRQFLAGS2, 0x10)
+        self._set_mode(self.MODE_RX)
 
     # -------------------------
     # Init
@@ -195,6 +208,8 @@ class RFM69:
             if version != self.EXPECTED_VERSION:
                 raise OSError("rfm bad version 0x{:02X}".format(version))
 
+            self._set_mode(self.MODE_RX)
+
             self.ok = True
             self.last_error = None
 
@@ -236,10 +251,6 @@ class RFM69:
             if not self.ok:
                 if not self.reconnect():
                     return False
-
-            version = self._read_reg(self.REG_VERSION)
-            if version != self.EXPECTED_VERSION:
-                raise OSError("rfm bad version 0x{:02X}".format(version))
 
             payload = text.encode("utf-8")
 
@@ -284,3 +295,56 @@ class RFM69:
             except Exception:
                 pass
             return False
+
+    def receive_line(self, timeout_ms=0):
+        try:
+            if not self.ok:
+                if not self.reconnect():
+                    return None
+
+            version = self._read_reg(self.REG_VERSION)
+            if version != self.EXPECTED_VERSION:
+                raise OSError("rfm bad version 0x{:02X}".format(version))
+
+            self._set_mode(self.MODE_RX)
+
+            start = utime.ticks_ms()
+            while True:
+                irq2 = self._read_reg(self.REG_IRQFLAGS2)
+
+                # PayloadReady
+                if irq2 & 0x04:
+                    length = self._read_reg(self.REG_FIFO)
+
+                    if length <= 0 or length > 60:
+                        self.last_error = "rfm invalid packet length {}".format(length)
+                        self._clear_fifo()
+                        return None
+
+                    payload = self._burst_read(self.REG_FIFO, length)
+                    text = payload.decode("utf-8")
+
+                    self.ok = True
+                    self.last_error = None
+                    return text
+
+                if timeout_ms == 0:
+                    self.ok = True
+                    self.last_error = None
+                    return None
+
+                if utime.ticks_diff(utime.ticks_ms(), start) > timeout_ms:
+                    self.ok = True
+                    self.last_error = None
+                    return None
+
+                utime.sleep_ms(5)
+
+        except Exception as e:
+            self.ok = False
+            self.last_error = str(e)
+            try:
+                self._set_mode(self.MODE_STDBY)
+            except Exception:
+                pass
+            return None

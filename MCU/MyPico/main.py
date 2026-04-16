@@ -29,7 +29,7 @@ I2C_FREQ = 100000
 # BMP580
 BMP_ADDRESS = 0x47
 BMP_SEA_LEVEL_PRESSURE = 1013.25
-
+ 
 # BME688
 BME_ADDRESS = 0x77
 BME_SEA_LEVEL_PRESSURE = 1013.25
@@ -78,24 +78,27 @@ RFM_RST_PIN = None
 RFM_FREQ_MHZ = 434.0
 RFM_BITRATE = 4800
 RFM_TX_POWER_DBM = 13
+RFM_MAX_PAYLOAD_BYTES = 60
+RFM_LOG_EVERY_SEND = True
 
 # Main loop
-LOOP_DELAY_MS = 1000
+LOOP_DELAY_MS = 200
 
 # =========================
 # LED TIMINGS
 # =========================
-LED_INIT_CHECK_MS = 120
-LED_INIT_RESULT_MS = 180
+LED_INIT_CHECK_MS = 60
+LED_INIT_RESULT_MS = 100
 
-LED_CYCLE_CHECK_MS = 80
-LED_CYCLE_RESULT_MS = 120
+LED_CYCLE_CHECK_MS = 30
+LED_CYCLE_RESULT_MS = 60
 
-LED_BETWEEN_CYCLES_MS = 180
-LED_BLUE_BIP_MS = 80
-LED_DARK_BIP_MS = 80
+LED_BETWEEN_CYCLES_MS = 60
+LED_BLUE_BIP_MS = 40
+LED_DARK_BIP_MS = 10
 
-LED_MAIN_ERROR_RED_MS = 200
+LED_MAIN_ERROR_RED_MS = 120
+
 
 
 # =========================
@@ -111,8 +114,135 @@ def log_line(timestamp, level, source, message):
     return "{} [{}] {} {}".format(timestamp, level, source, message)
 
 
+def fmt_value(value, decimals=None, unit=""):
+    if value is None:
+        return "None"
+    if decimals is None:
+        return "{}{}".format(value, unit)
+    fmt = "{:." + str(decimals) + "f}{}"
+    return fmt.format(value, unit)
+
+
+def format_bmp_text(bmp_data):
+    if not bmp_data["ok"]:
+        return "BMP[ERR]"
+    return "BMP[T={} P={} A={}]".format(
+        fmt_value(bmp_data["temperature_c"], 1, "C"),
+        fmt_value(bmp_data["pressure_hpa"], 1, "hPa"),
+        fmt_value(bmp_data["altitude_m"], 1, "m")
+    )
+
+
+def format_bme_text(bme_data):
+    if not bme_data["ok"]:
+        return "BME[ERR]"
+    return "BME[T={} P={} H={} G={}ohm V={} A={}]".format(
+        fmt_value(bme_data["temperature_c"], 1, "C"),
+        fmt_value(bme_data["pressure_hpa"], 1, "hPa"),
+        fmt_value(bme_data["humidity_pct"], 1, "%"),
+        fmt_value(bme_data["gas_ohms"]),
+        int(bme_data["gas_valid"]),
+        fmt_value(bme_data["altitude_m"], 1, "m")
+    )
+
+
+def format_mpu_text(mpu_data):
+    if not mpu_data["ok"]:
+        return "MPU[ERR]"
+    return "MPU[Ax={} Ay={} Az={} Gx={} Gy={} Gz={} Tmp={} Pit={} Rol={}]".format(
+        fmt_value(mpu_data["ax"], 2, "g"),
+        fmt_value(mpu_data["ay"], 2, "g"),
+        fmt_value(mpu_data["az"], 2, "g"),
+        fmt_value(mpu_data["gx"], 2, "dps"),
+        fmt_value(mpu_data["gy"], 2, "dps"),
+        fmt_value(mpu_data["gz"], 2, "dps"),
+        fmt_value(mpu_data["temp"], 1, "C"),
+        fmt_value(mpu_data["pitch"], 1, "deg"),
+        fmt_value(mpu_data["roll"], 1, "deg")
+    )
+
+
+def format_gps_text(gps_data):
+    if not gps_data["ok"]:
+        return "GPS[ERR:{}]".format(gps_data.get("error", "unknown"))
+    return (
+        "GPS[CON={} FIX={} RTC={} UTC={} {} LAT={} LON={} ALT={} "
+        "HSPD={} VSPD={} CRS={} SAT={}]"
+    ).format(
+        int(gps_data["connected"]),
+        int(gps_data["fix"]),
+        int(gps_data["rtc_update_ready"]),
+        gps_data["utc_date"],
+        gps_data["utc_time"],
+        fmt_value(gps_data["latitude"]),
+        fmt_value(gps_data["longitude"]),
+        fmt_value(gps_data["absolute_altitude_m"], 1, "m"),
+        fmt_value(gps_data["horizontal_speed_kmh"], 1, "kmh"),
+        fmt_value(gps_data["vertical_speed_ms"], 1, "ms"),
+        fmt_value(gps_data["compass_deg"], 1, "deg"),
+        fmt_value(gps_data["satellites"]),
+    )
+
+
+def format_telemetry_line(ts, bmp_data, bme_data, mpu_data, gps_data):
+    return "T={} {} {} {} {}".format(
+        ts,
+        format_bmp_text(bmp_data),
+        format_bme_text(bme_data),
+        format_mpu_text(mpu_data),
+        format_gps_text(gps_data)
+    )
+
+
+def format_rfm_line(ts, bmp_data, bme_data, gps_data):
+    time_text = ts[-8:] if ts != "RTC_ERR" else ts
+    bmp_alt = bmp_data["altitude_m"] if bmp_data["ok"] else None
+    bme_temp = bme_data["temperature_c"] if bme_data["ok"] else None
+    bme_hum = bme_data["humidity_pct"] if bme_data["ok"] else None
+    gps_fix = int(gps_data["fix"]) if gps_data["ok"] else 0
+    gps_sat = gps_data["satellites"] if gps_data["ok"] else 0
+
+    return "{} A={} T={} H={} GPS={} SAT={}".format(
+        time_text,
+        fmt_value(bmp_alt, 1),
+        fmt_value(bme_temp, 1),
+        fmt_value(bme_hum, 0),
+        gps_fix,
+        fmt_value(gps_sat)
+    )
+
+
+def fit_rfm_payload(text):
+    payload = text.encode("utf-8")
+
+    if len(payload) <= RFM_MAX_PAYLOAD_BYTES:
+        return text
+
+    return payload[:RFM_MAX_PAYLOAD_BYTES].decode("utf-8")
+
+
+def rfm_debug_line(timestamp, status):
+    if status["ok"]:
+        version_note = "OK" if status["version_ok"] else "BAD"
+        return (
+            "{} [DEBUG] RFM69 VERSION=0x{:02X} OPMODE=0x{:02X} "
+            "IRQ1=0x{:02X} IRQ2=0x{:02X} VERSION_STATUS={}"
+        ).format(
+            timestamp,
+            status["version"],
+            status["opmode"],
+            status["irq1"],
+            status["irq2"],
+            version_note
+        )
+
+    return "{} [DEBUG] RFM69 DEBUG_ERROR {}".format(
+        timestamp,
+        status.get("error", "unknown")
+    )
+
+
 def led_off(index):
-    # Try common method names because I don't have your exact class here.
     if hasattr(leds, "off"):
         leds.off(index)
         return
@@ -147,6 +277,28 @@ def show_led_status(index, is_ok, check_ms, result_ms):
     utime.sleep_ms(result_ms)
 
 
+def gps_led_state(gps_data):
+    if gps_data["ok"] and gps_data["connected"] and gps_data["fix"]:
+        return "fix"
+    if gps_data["ok"] and gps_data["connected"]:
+        return "connected"
+    return "fail"
+
+
+def show_gps_status(gps_state, check_ms, result_ms):
+    leds.checking(LED_GPS)
+    utime.sleep_ms(check_ms)
+
+    if gps_state == "fix":
+        leds.ok(LED_GPS)
+    elif gps_state == "connected":
+        leds.info(LED_GPS)
+    else:
+        leds.fail(LED_GPS)
+
+    utime.sleep_ms(result_ms)
+
+
 def blue_bip():
     leds.blink_all(leds.BLUE, LED_BLUE_BIP_MS)
 
@@ -167,8 +319,9 @@ def show_two_status_cycles(status_map):
     utime.sleep_ms(LED_BETWEEN_CYCLES_MS)
 
     # Cycle 2: SD, GPS, RFM, empty
+    led_off(LED_EMPTY)
     show_led_status(LED_SD, status_map["sd"], LED_CYCLE_CHECK_MS, LED_CYCLE_RESULT_MS)
-    show_led_status(LED_GPS, status_map["gps"], LED_CYCLE_CHECK_MS, LED_CYCLE_RESULT_MS)
+    show_gps_status(status_map["gps"], LED_CYCLE_CHECK_MS, LED_CYCLE_RESULT_MS)
     show_led_status(LED_RFM, status_map["rfm"], LED_CYCLE_CHECK_MS, LED_CYCLE_RESULT_MS)
 
     led_off(LED_EMPTY)
@@ -198,8 +351,9 @@ def show_init_cycles(init_status_map):
     utime.sleep_ms(LED_BETWEEN_CYCLES_MS)
 
     # cycle 2
+    led_off(LED_EMPTY)
     show_init_module(LED_SD, init_status_map["sd"])
-    show_init_module(LED_GPS, init_status_map["gps"])
+    show_gps_status(init_status_map["gps"], LED_INIT_CHECK_MS, LED_INIT_RESULT_MS)
     show_init_module(LED_RFM, init_status_map["rfm"])
 
     led_off(LED_EMPTY)
@@ -343,6 +497,35 @@ if rfm.ok:
 else:
     print("RFM69 NOT READY:", rfm.last_error)
 
+print("CANSAT RFM CONFIG: SCK=GP{} MOSI=GP{} MISO=GP{} CS=GP{} FREQ={}MHz BITRATE={} TX_POWER={}dBm".format(
+    RFM_SCK_PIN,
+    RFM_MOSI_PIN,
+    RFM_MISO_PIN,
+    RFM_CS_PIN,
+    RFM_FREQ_MHZ,
+    RFM_BITRATE,
+    RFM_TX_POWER_DBM
+))
+
+sdmod.write_log(log_line(
+    now_text(rtc_test),
+    "INFO",
+    "RFM69",
+    "CONFIG SCK=GP{} MOSI=GP{} MISO=GP{} CS=GP{} FREQ={}MHz BITRATE={} TX_POWER={}dBm".format(
+        RFM_SCK_PIN,
+        RFM_MOSI_PIN,
+        RFM_MISO_PIN,
+        RFM_CS_PIN,
+        RFM_FREQ_MHZ,
+        RFM_BITRATE,
+        RFM_TX_POWER_DBM
+    )
+))
+
+rfm_debug = rfm_debug_line(now_text(rtc_test), rfm.debug_status())
+print(rfm_debug)
+sdmod.write_log(rfm_debug)
+
 
 # =========================
 # SHOW INIT STATUS CYCLES
@@ -353,7 +536,7 @@ init_status_map = {
     "bme": bme_test["ok"],
     "mpu": mpu_test["ok"],
     "sd": sdmod.ok,
-    "gps": gps_test["ok"],
+    "gps": gps_led_state(gps_test),
     "rfm": rfm.ok,
 }
 show_init_cycles(init_status_map)
@@ -383,11 +566,9 @@ while True:
 
         if rtc_data["ok"]:
             if not rtc_was_ok:
-                print("RTC RECONNECTED")
                 sdmod.write_log(log_line(ts, "INFO", "RTC", "RECONNECTED"))
             rtc_was_ok = True
         else:
-            print("RTC FAILED:", rtc_data.get("error", "unknown"))
             rtc.reconnect()
             rtc_was_ok = False
 
@@ -396,12 +577,10 @@ while True:
 
         if bmp_data["ok"]:
             if not bmp_was_ok:
-                print("BMP580 RECONNECTED")
                 sdmod.write_log(log_line(ts, "INFO", "BMP580", "RECONNECTED"))
             bmp_was_ok = True
         else:
             if bmp_was_ok:
-                print("BMP580 FAILED:", bmp_data.get("error", "unknown"))
                 sdmod.write_log(log_line(ts, "ERROR", "BMP580", bmp_data.get("error", "unknown")))
             bmp.reconnect()
             bmp_was_ok = False
@@ -411,12 +590,10 @@ while True:
 
         if bme_data["ok"]:
             if not bme_was_ok:
-                print("BME688 RECONNECTED")
                 sdmod.write_log(log_line(ts, "INFO", "BME688", "RECONNECTED"))
             bme_was_ok = True
         else:
             if bme_was_ok:
-                print("BME688 FAILED:", bme_data.get("error", "unknown"))
                 sdmod.write_log(log_line(ts, "ERROR", "BME688", bme_data.get("error", "unknown")))
             bme.reconnect()
             bme_was_ok = False
@@ -426,12 +603,10 @@ while True:
 
         if mpu_data["ok"]:
             if not mpu_was_ok:
-                print("MPU6500 RECONNECTED")
                 sdmod.write_log(log_line(ts, "INFO", "MPU6500", "RECONNECTED"))
             mpu_was_ok = True
         else:
             if mpu_was_ok:
-                print("MPU6500 FAILED:", mpu_data.get("error", "unknown"))
                 sdmod.write_log(log_line(ts, "ERROR", "MPU6500", mpu_data.get("error", "unknown")))
             mpu.reconnect()
             mpu_was_ok = False
@@ -441,11 +616,9 @@ while True:
 
         if gps_data["ok"]:
             if not gps_was_ok:
-                print("GPS RECONNECTED")
                 sdmod.write_log(log_line(ts, "INFO", "GPS", "RECONNECTED"))
             gps_was_ok = True
         else:
-            print("GPS FAILED:", gps_data.get("error", "unknown"))
             if gps_was_ok:
                 sdmod.write_log(log_line(ts, "ERROR", "GPS", gps_data.get("error", "unknown")))
             gps.reconnect()
@@ -453,125 +626,61 @@ while True:
 
         if gps_data["ok"] and gps_data["fix"]:
             if not gps_had_fix:
-                print("GPS FIX ACQUIRED")
                 sdmod.write_log(log_line(ts, "INFO", "GPS", "FIX_ACQUIRED"))
             gps_had_fix = True
         else:
             if gps_had_fix:
-                print("GPS FIX LOST")
                 sdmod.write_log(log_line(ts, "WARN", "GPS", "FIX_LOST"))
             gps_had_fix = False
 
+        # ---------- FORMAT OUTPUTS ----------
+        telemetry_line = format_telemetry_line(ts, bmp_data, bme_data, mpu_data, gps_data)
+        rfm_line = format_rfm_line(ts, bmp_data, bme_data, gps_data)
+
         # ---------- SD WRITE / HEALTH ----------
-        # SD health is judged by successful write later.
-        # Start from previous value.
         current_sd_ok = sd_was_ok
-
-        # ---------- RFM HEALTH ----------
-        current_rfm_ok = rfm_was_ok
-
-        # ---------- TELEMETRY FORMAT ----------
-        if bmp_data["ok"]:
-            bmp_text = "BMP[T={:.1f}C P={:.1f}hPa A={:.1f}m]".format(
-                bmp_data["temperature_c"],
-                bmp_data["pressure_hpa"],
-                bmp_data["altitude_m"]
-            )
-        else:
-            bmp_text = "BMP[ERR]"
-
-        if bme_data["ok"]:
-            gas_ohms = bme_data["gas_ohms"]
-            gas_valid = bme_data["gas_valid"]
-
-            if gas_ohms is None:
-                gas_text = "None"
-            else:
-                gas_text = str(gas_ohms)
-
-            bme_text = "BME[T={:.1f}C P={:.1f}hPa H={:.1f}% G={}ohm V={} A={:.1f}m]".format(
-                bme_data["temperature_c"],
-                bme_data["pressure_hpa"],
-                bme_data["humidity_pct"],
-                gas_text,
-                int(gas_valid),
-                bme_data["altitude_m"]
-            )
-        else:
-            bme_text = "BME[ERR]"
-
-        if mpu_data["ok"]:
-            mpu_text = "MPU[Ax={:.2f}g Ay={:.2f}g Az={:.2f}g Gx={:.2f}dps Gy={:.2f}dps Gz={:.2f}dps Tmp={:.1f}C Pit={:.1f}deg Rol={:.1f}deg]".format(
-                mpu_data["ax"],
-                mpu_data["ay"],
-                mpu_data["az"],
-                mpu_data["gx"],
-                mpu_data["gy"],
-                mpu_data["gz"],
-                mpu_data["temp"],
-                mpu_data["pitch"],
-                mpu_data["roll"]
-            )
-        else:
-            mpu_text = "MPU[ERR]"
-
-        if gps_data["ok"]:
-            gps_text = (
-                "GPS[CON={} FIX={} RTC={} UTC={} {} LAT={} LON={} ALT={}m "
-                "HSPD={}kmh VSPD={}ms CRS={}deg SAT={}]"
-            ).format(
-                int(gps_data["connected"]),
-                int(gps_data["fix"]),
-                int(gps_data["rtc_update_ready"]),
-                gps_data["utc_date"],
-                gps_data["utc_time"],
-                gps_data["latitude"],
-                gps_data["longitude"],
-                gps_data["absolute_altitude_m"],
-                gps_data["horizontal_speed_kmh"],
-                gps_data["vertical_speed_ms"],
-                gps_data["compass_deg"],
-                gps_data["satellites"],
-            )
-        else:
-            gps_text = "GPS[ERR:{}]".format(gps_data.get("error", "unknown"))
-
-        telemetry_line = "T={} {} {} {} {}".format(
-            ts,
-            bmp_text,
-            bme_text,
-            mpu_text,
-            gps_text
-        )
-
-        print(telemetry_line)
-
-        # ---------- SD WRITE ----------
         data_ok = sdmod.write_data(telemetry_line)
 
         if data_ok:
             if not sd_was_ok:
-                print("SD RECONNECTED")
                 sdmod.write_log(log_line(ts, "INFO", "SD", "RECONNECTED"))
             current_sd_ok = True
         else:
-            if sd_was_ok:
-                print("SD FAILED:", sdmod.last_error)
             current_sd_ok = False
 
         sd_was_ok = current_sd_ok
 
         # ---------- RFM SEND ----------
-        rfm_ok = rfm.send_line(telemetry_line)
+        current_rfm_ok = rfm_was_ok
+        rfm_tx_line = fit_rfm_payload(rfm_line)
+
+        if RFM_LOG_EVERY_SEND:
+            tx_attempt_log = log_line(ts, "INFO", "RFM69", "TX_ATTEMPT {}".format(rfm_tx_line))
+            print(tx_attempt_log)
+            sdmod.write_log(tx_attempt_log)
+
+        rfm_ok = rfm.send_line(rfm_tx_line)
 
         if rfm_ok:
+            if RFM_LOG_EVERY_SEND:
+                tx_ok_log = log_line(ts, "INFO", "RFM69", "TX_OK {}".format(rfm_tx_line))
+                print(tx_ok_log)
+                sdmod.write_log(tx_ok_log)
+
             if not rfm_was_ok:
-                print("RFM69 RECONNECTED")
                 sdmod.write_log(log_line(ts, "INFO", "RFM69", "RECONNECTED"))
             current_rfm_ok = True
         else:
+            tx_fail_log = log_line(
+                ts,
+                "ERROR",
+                "RFM69",
+                "TX_FAIL {} ERROR={}".format(rfm_tx_line, rfm.last_error)
+            )
+            print(tx_fail_log)
+            sdmod.write_log(tx_fail_log)
+
             if rfm_was_ok:
-                print("RFM69 FAILED:", rfm.last_error)
                 sdmod.write_log(log_line(ts, "ERROR", "RFM69", rfm.last_error))
             rfm.reconnect()
             current_rfm_ok = False
@@ -585,9 +694,10 @@ while True:
             "bme": bme_data["ok"],
             "mpu": mpu_data["ok"],
             "sd": current_sd_ok,
-            "gps": gps_data["ok"],
+            "gps": gps_led_state(gps_data),
             "rfm": current_rfm_ok,
         }
+        print(telemetry_line)
         show_two_status_cycles(status_map)
 
     except Exception as e:

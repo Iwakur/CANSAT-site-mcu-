@@ -271,7 +271,7 @@ class GPS6MV2:
                 elif parsed["sentence"] == "RMC":
                     self._last_rmc = parsed
 
-            if not got_anything and self._last_gga is None and self._last_rmc is None:
+            if not got_anything:
                 raise RuntimeError("no GPS data")
 
             lat = None
@@ -319,7 +319,7 @@ class GPS6MV2:
 
             result = {
                 "ok": True,
-                "connected": got_anything or (self._last_line is not None),
+                "connected": got_anything,
                 "fix": fix,
                 "latitude": lat,
                 "longitude": lon,

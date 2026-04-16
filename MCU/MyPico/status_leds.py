@@ -58,6 +58,10 @@ class StatusLEDs:
         self._set(index, self.ORANGE)
         self.show()
 
+    def info(self, index):
+        self._set(index, self.BLUE)
+        self.show()
+
     # -------------------------
     # GLOBAL EFFECTS
     # -------------------------

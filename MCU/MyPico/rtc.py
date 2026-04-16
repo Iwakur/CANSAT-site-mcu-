@@ -15,6 +15,8 @@ def is_valid_bcd(x):
 
 
 class DS1302:
+    STUCK_TIMEOUT_MS = 5000
+
     REG_SECONDS = 0x80
     REG_MINUTES = 0x82
     REG_HOURS   = 0x84
@@ -35,6 +37,8 @@ class DS1302:
 
         self.ok = False
         self.last_error = None
+        self._last_datetime = None
+        self._last_datetime_change_ms = None
 
         # Try one initial read so status reflects reality
         self.read()
@@ -187,6 +191,8 @@ class DS1302:
             self.clk = Pin(self.clk_pin, Pin.OUT, value=0)
             self.dat = Pin(self.dat_pin, Pin.OUT, value=0)
             self.rst = Pin(self.rst_pin, Pin.OUT, value=0)
+            self._last_datetime = None
+            self._last_datetime_change_ms = None
             result = self.read()
             return result["ok"]
         except Exception as e:
@@ -228,6 +234,8 @@ class DS1302:
 
             self.ok = True
             self.last_error = None
+            self._last_datetime = None
+            self._last_datetime_change_ms = None
             return True
 
         except Exception as e:
@@ -242,6 +250,20 @@ class DS1302:
     def read(self):
         try:
             dt = self.get_datetime()
+            now_ms = utime.ticks_ms()
+            datetime_text = "{:04d}-{:02d}-{:02d} {:02d}:{:02d}:{:02d}".format(
+                dt["year"], dt["month"], dt["day"],
+                dt["hour"], dt["minute"], dt["second"]
+            )
+
+            if datetime_text != self._last_datetime:
+                self._last_datetime = datetime_text
+                self._last_datetime_change_ms = now_ms
+            elif (
+                self._last_datetime_change_ms is not None
+                and utime.ticks_diff(now_ms, self._last_datetime_change_ms) > self.STUCK_TIMEOUT_MS
+            ):
+                raise RuntimeError("DS1302 time not advancing")
 
             data = {
                 "ok": True,
@@ -254,10 +276,7 @@ class DS1302:
                 "second": dt["second"],
                 "date": "{:04d}-{:02d}-{:02d}".format(dt["year"], dt["month"], dt["day"]),
                 "time": "{:02d}:{:02d}:{:02d}".format(dt["hour"], dt["minute"], dt["second"]),
-                "datetime": "{:04d}-{:02d}-{:02d} {:02d}:{:02d}:{:02d}".format(
-                    dt["year"], dt["month"], dt["day"],
-                    dt["hour"], dt["minute"], dt["second"]
-                )
+                "datetime": datetime_text
             }
 
             self.ok = True
