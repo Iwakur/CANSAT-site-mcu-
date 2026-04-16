@@ -1,70 +1,141 @@
-a {
-  text-align: center;
-  text-decoration: none;
-  color: inherit;
-  display: inline-block;
-  font-weight: bold;
-  font-size: 5rem;
-
-  transition: color 0.5s ease, text-shadow 1s ease, transform 0.5s ease;
-}
-
-a:hover {
-  /* fix: don’t make it transparent; use solid accent */
-  color: #4fc3f7;
-  text-shadow: 0 0 14px rgba(79, 195, 247, 0.35);
-  transform: scale(1.05);
-}
-
-.start {
-  text-align: center;
-  display: flex;
-  flex-direction: row;
-  gap: 5vw;
-  align-items: center;
-  justify-content: center;
-  height: 70vh;
-  position: relative;
-}
-
-/* Hover text: starts above, invisible */
-.hover-text {
-  font-size: 1rem;
-  padding: 6px 10px;
-  border-radius: 10px;
-  white-space: normal;
-  width: 30em;
-  background: #1b2430;
-  color: #e6eaf0;
-
-  opacity: 0;
-  transform: translateY(-14px);
-  /* start higher (above) */
-  pointer-events: none;
-
-  transition: opacity 0.5s ease, transform 0.5s ease;
-}
-
-/* Show on hover with “swipe/slide” down into place */
-.hover-cont:hover .hover-text {
-  opacity: 1;
-  transform: translateY(0);
-}
-
-.blue a:hover {
-  color: #4fc3f7;
-  text-shadow: 0 0 14px rgba(79, 195, 247, 0.35);
-}
-
-.blue .hover-text {
-  background: #0b1f2a; /* deep blue-black */
-}
-
-.red a:hover {
-  color: #f44336;
-  text-shadow: 0 0 14px rgba(244, 67, 54, 0.35);
-}
-
-.red .hover-text {
-  background: #2a0f12; /* deep red-black */
-}
+
+a {
+
+  text-align: center;
+
+  text-decoration: none;
+
+  color: inherit;
+
+  display: inline-block;
+
+  font-weight: bold;
+
+  font-size: 5rem;
+
+
+
+  transition: color 0.5s ease, text-shadow 1s ease, transform 0.5s ease;
+
+}
+
+
+
+a:hover {
+
+  /* fix: don’t make it transparent; use solid accent */
+
+  color: #4fc3f7;
+
+  text-shadow: 0 0 14px rgba(79, 195, 247, 0.35);
+
+  transform: scale(1.05);
+
+}
+
+
+
+.start {
+
+  text-align: center;
+
+  display: flex;
+
+  flex-direction: row;
+
+  gap: 5vw;
+
+  align-items: center;
+
+  justify-content: center;
+
+  height: 70vh;
+
+  position: relative;
+
+}
+
+
+
+/* Hover text: starts above, invisible */
+
+.hover-text {
+
+  font-size: 1rem;
+
+  padding: 6px 10px;
+
+  border-radius: 10px;
+
+  white-space: normal;
+
+  width: 30em;
+
+  background: #1b2430;
+
+  color: #e6eaf0;
+
+
+
+  opacity: 0;
+
+  transform: translateY(-14px);
+
+  /* start higher (above) */
+
+  pointer-events: none;
+
+
+
+  transition: opacity 0.5s ease, transform 0.5s ease;
+
+}
+
+
+
+/* Show on hover with “swipe/slide” down into place */
+
+.hover-cont:hover .hover-text {
+
+  opacity: 1;
+
+  transform: translateY(0);
+
+}
+
+
+
+.blue a:hover {
+
+  color: #4fc3f7;
+
+  text-shadow: 0 0 14px rgba(79, 195, 247, 0.35);
+
+}
+
+
+
+.blue .hover-text {
+
+  background: #0b1f2a; /* deep blue-black */
+
+}
+
+
+
+.red a:hover {
+
+  color: #f44336;
+
+  text-shadow: 0 0 14px rgba(244, 67, 54, 0.35);
+
+}
+
+
+
+.red .hover-text {
+
+  background: #2a0f12; /* deep red-black */
+
+}
+
