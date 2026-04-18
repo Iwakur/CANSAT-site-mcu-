@@ -84,9 +84,12 @@ RFM_BITRATE = 4800
 RFM_TX_POWER_DBM = 13
 RFM_MAX_PAYLOAD_BYTES = 60
 RFM_LOG_EVERY_SEND = True
+DEBUG_TELEMETRY = True
 
 # Main loop
 LOOP_DELAY_MS = 200
+SENSOR_RECONNECT_INTERVAL_MS = 3000
+RFM_RECONNECT_INTERVAL_MS = 3000
 
 # =========================
 # LED TIMINGS
@@ -362,6 +365,52 @@ def fmt_rfm_int(value, width=None):
     return text
 
 
+def scale_int(value, factor=1):
+    if value is None:
+        return "?"
+    try:
+        return str(int(round(value * factor)))
+    except Exception:
+        return "?"
+
+
+def short_time(ts):
+    if ts == "RTC_ERR":
+        return "RTCERR"
+    return ts[-8:].replace(":", "")
+
+
+def weekday_from_date(year, month, day):
+    # Sakamoto algorithm: returns DS1302 weekday 1..7, Monday=1.
+    offsets = (0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4)
+    if month < 3:
+        year -= 1
+    sunday_based = (year + year // 4 - year // 100 + year // 400 + offsets[month - 1] + day) % 7
+    return 7 if sunday_based == 0 else sunday_based
+
+
+def sync_rtc_from_gps(rtc, gps_data):
+    if not gps_data["ok"] or not gps_data["rtc_update_ready"]:
+        return False
+    try:
+        date_text = gps_data["utc_date"]
+        time_text = gps_data["utc_time"]
+        year = int(date_text[0:4])
+        month = int(date_text[5:7])
+        day = int(date_text[8:10])
+        hour = int(time_text[0:2])
+        minute = int(time_text[3:5])
+        second = int(time_text[6:8])
+        weekday = weekday_from_date(year, month, day)
+        return rtc.set_datetime(year, month, day, weekday, hour, minute, second)
+    except Exception:
+        return False
+
+
+def retry_due(last_ms, interval_ms):
+    return utime.ticks_diff(utime.ticks_ms(), last_ms) >= interval_ms
+
+
 def format_bmp_text(bmp_data):
     if not bmp_data["ok"]:
         return "BMP[ERR:{}]".format(bmp_data.get("error", "unknown"))
@@ -375,12 +424,11 @@ def format_bmp_text(bmp_data):
 def format_bme_text(bme_data):
     if not bme_data["ok"]:
         return "BME[ERR]"
-    return "BME[T={} P={} H={} G={}ohm V={} A={}]".format(
+    return "BME[T={} P={} H={} G={}ohm A={}]".format(
         fmt_value(bme_data["temperature_c"], 1, "C"),
         fmt_value(bme_data["pressure_hpa"], 1, "hPa"),
         fmt_value(bme_data["humidity_pct"], 1, "%"),
         fmt_value(bme_data["gas_ohms"]),
-        int(bme_data["gas_valid"]),
         fmt_value(bme_data["altitude_m"], 1, "m")
     )
 
@@ -416,22 +464,12 @@ def format_mag_text(mag_data):
 def format_gps_text(gps_data):
     if not gps_data["ok"]:
         return "GPS[ERR:{}]".format(gps_data.get("error", "unknown"))
-    return (
-        "GPS[CON={} FIX={} RTC={} UTC={} {} LAT={} LON={} ALT={} "
-        "HSPD={} VSPD={} CRS={} SAT={}]"
-    ).format(
-        int(gps_data["connected"]),
+    return "GPS[FIX={} SAT={} LAT={} LON={} ALT={}]".format(
         int(gps_data["fix"]),
-        int(gps_data["rtc_update_ready"]),
-        gps_data["utc_date"],
-        gps_data["utc_time"],
+        fmt_value(gps_data["satellites"]),
         fmt_value(gps_data["latitude"]),
         fmt_value(gps_data["longitude"]),
         fmt_value(gps_data["absolute_altitude_m"], 1, "m"),
-        fmt_value(gps_data["horizontal_speed_kmh"], 1, "kmh"),
-        fmt_value(gps_data["vertical_speed_ms"], 1, "ms"),
-        fmt_value(gps_data["compass_deg"], 1, "deg"),
-        fmt_value(gps_data["satellites"]),
     )
 
 
@@ -468,6 +506,71 @@ def format_rfm_line(ts, bmp_data, bme_data, gps_data, mag_data):
         fmt_rfm_int(mag_y),
         fmt_rfm_int(mag_z)
     )
+
+
+def build_env_packet(sample_id, ts, bmp_data, bme_data):
+    bmp_temp = bmp_data["temperature_c"] if bmp_data["ok"] else None
+    bmp_pressure = bmp_data["pressure_hpa"] if bmp_data["ok"] else None
+    bme_temp = bme_data["temperature_c"] if bme_data["ok"] else None
+    bme_pressure = bme_data["pressure_hpa"] if bme_data["ok"] else None
+    bme_humidity = bme_data["humidity_pct"] if bme_data["ok"] else None
+    bme_gas = bme_data["gas_ohms"] if bme_data["ok"] else None
+
+    return "E,{},{},{},{},{},{},{},{}".format(
+        sample_id,
+        short_time(ts),
+        scale_int(bmp_temp, 10),
+        scale_int(bmp_pressure, 10),
+        scale_int(bme_temp, 10),
+        scale_int(bme_pressure, 10),
+        scale_int(bme_humidity, 10),
+        scale_int(bme_gas),
+    )
+
+
+def build_motion_packet(sample_id, mpu_data):
+    return "M,{},A,{},{},{},{},{},{}".format(
+        sample_id,
+        scale_int(mpu_data["ax"] if mpu_data["ok"] else None, 1000),
+        scale_int(mpu_data["ay"] if mpu_data["ok"] else None, 1000),
+        scale_int(mpu_data["az"] if mpu_data["ok"] else None, 1000),
+        scale_int(mpu_data["gx"] if mpu_data["ok"] else None, 100),
+        scale_int(mpu_data["gy"] if mpu_data["ok"] else None, 100),
+        scale_int(mpu_data["gz"] if mpu_data["ok"] else None, 100),
+    )
+
+
+def build_mag_packet(sample_id, mag_data):
+    return "M,{},C,{},{},{}".format(
+        sample_id,
+        scale_int(mag_data["x"] if mag_data["ok"] else None),
+        scale_int(mag_data["y"] if mag_data["ok"] else None),
+        scale_int(mag_data["z"] if mag_data["ok"] else None),
+    )
+
+
+def build_gps_packet(sample_id, gps_data):
+    return "G,{},{},{},{},{},{},{},{}".format(
+        sample_id,
+        int(gps_data["fix"]) if gps_data["ok"] else 0,
+        scale_int(gps_data["satellites"] if gps_data["ok"] else None),
+        scale_int(gps_data["latitude"] if gps_data["ok"] else None, 1000000),
+        scale_int(gps_data["longitude"] if gps_data["ok"] else None, 1000000),
+        scale_int(gps_data["absolute_altitude_m"] if gps_data["ok"] else None, 10),
+        gps_data["utc_date"] if gps_data["ok"] and gps_data["utc_date"] else "?",
+        gps_data["utc_time"] if gps_data["ok"] and gps_data["utc_time"] else "?",
+    )
+
+
+def build_rfm_packets(sample_id, ts, bmp_data, bme_data, mpu_data, mag_data, gps_data, send_gps):
+    packets = [
+        build_env_packet(sample_id, ts, bmp_data, bme_data),
+        build_motion_packet(sample_id, mpu_data),
+    ]
+    if send_gps:
+        packets.append(build_gps_packet(sample_id, gps_data))
+    packets.append(build_mag_packet(sample_id, mag_data))
+    return packets
 
 
 def fit_rfm_payload(text):
@@ -863,6 +966,18 @@ gps_was_ok = gps_test["ok"]
 gps_had_fix = gps_test["fix"] if gps_test["ok"] else False
 sd_was_ok = sdmod.ok
 rfm_was_ok = rfm.ok
+sample_id = 0
+gps_time_synced_for_connection = False
+gps_packet_sent_for_connection = False
+gps_fix_packet_sent_for_connection = False
+
+last_rtc_reconnect_ms = utime.ticks_ms()
+last_bmp_reconnect_ms = utime.ticks_ms()
+last_bme_reconnect_ms = utime.ticks_ms()
+last_mpu_reconnect_ms = utime.ticks_ms()
+last_mag_reconnect_ms = utime.ticks_ms()
+last_gps_reconnect_ms = utime.ticks_ms()
+last_rfm_reconnect_ms = utime.ticks_ms()
 
 
 # =========================
@@ -879,7 +994,9 @@ while True:
                 sdmod.write_log(log_line(ts, "INFO", "RTC", "RECONNECTED"))
             rtc_was_ok = True
         else:
-            rtc.reconnect()
+            if retry_due(last_rtc_reconnect_ms, SENSOR_RECONNECT_INTERVAL_MS):
+                rtc.reconnect()
+                last_rtc_reconnect_ms = utime.ticks_ms()
             rtc_was_ok = False
 
         # ---------- BMP580 ----------
@@ -892,7 +1009,9 @@ while True:
         else:
             if bmp_was_ok:
                 sdmod.write_log(log_line(ts, "ERROR", "BMP580", bmp_data.get("error", "unknown")))
-            bmp.reconnect()
+            if retry_due(last_bmp_reconnect_ms, SENSOR_RECONNECT_INTERVAL_MS):
+                bmp.reconnect()
+                last_bmp_reconnect_ms = utime.ticks_ms()
             bmp_was_ok = False
 
         # ---------- BME688 ----------
@@ -905,7 +1024,9 @@ while True:
         else:
             if bme_was_ok:
                 sdmod.write_log(log_line(ts, "ERROR", "BME688", bme_data.get("error", "unknown")))
-            bme.reconnect()
+            if retry_due(last_bme_reconnect_ms, SENSOR_RECONNECT_INTERVAL_MS):
+                bme.reconnect()
+                last_bme_reconnect_ms = utime.ticks_ms()
             bme_was_ok = False
 
         # ---------- MPU6500 ----------
@@ -918,7 +1039,9 @@ while True:
         else:
             if mpu_was_ok:
                 sdmod.write_log(log_line(ts, "ERROR", "MPU6500", mpu_data.get("error", "unknown")))
-            mpu.reconnect()
+            if retry_due(last_mpu_reconnect_ms, SENSOR_RECONNECT_INTERVAL_MS):
+                mpu.reconnect()
+                last_mpu_reconnect_ms = utime.ticks_ms()
             mpu_was_ok = False
 
         # ---------- MAGNETOMETER ----------
@@ -931,7 +1054,9 @@ while True:
         else:
             if mag_was_ok:
                 sdmod.write_log(log_line(ts, "ERROR", "MAG", mag_data.get("error", "unknown")))
-            mag.reconnect()
+            if retry_due(last_mag_reconnect_ms, SENSOR_RECONNECT_INTERVAL_MS):
+                mag.reconnect()
+                last_mag_reconnect_ms = utime.ticks_ms()
             mag_was_ok = False
 
         # ---------- GPS ----------
@@ -940,12 +1065,20 @@ while True:
         if gps_data["ok"]:
             if not gps_was_ok:
                 sdmod.write_log(log_line(ts, "INFO", "GPS", "RECONNECTED"))
+                gps_time_synced_for_connection = False
+                gps_packet_sent_for_connection = False
+                gps_fix_packet_sent_for_connection = False
             gps_was_ok = True
         else:
             if gps_was_ok:
                 sdmod.write_log(log_line(ts, "ERROR", "GPS", gps_data.get("error", "unknown")))
-            gps.reconnect()
+            if retry_due(last_gps_reconnect_ms, SENSOR_RECONNECT_INTERVAL_MS):
+                gps.reconnect()
+                last_gps_reconnect_ms = utime.ticks_ms()
             gps_was_ok = False
+            gps_time_synced_for_connection = False
+            gps_packet_sent_for_connection = False
+            gps_fix_packet_sent_for_connection = False
 
         if gps_data["ok"] and gps_data["fix"]:
             if not gps_had_fix:
@@ -956,9 +1089,35 @@ while True:
                 sdmod.write_log(log_line(ts, "WARN", "GPS", "FIX_LOST"))
             gps_had_fix = False
 
+        if gps_data["ok"] and gps_data["rtc_update_ready"] and not gps_time_synced_for_connection:
+            if sync_rtc_from_gps(rtc, gps_data):
+                sdmod.write_log(log_line(ts, "INFO", "GPS", "RTC_SYNCED"))
+                gps_time_synced_for_connection = True
+            else:
+                sdmod.write_log(log_line(ts, "WARN", "GPS", "RTC_SYNC_FAILED"))
+
         # ---------- FORMAT OUTPUTS ----------
         telemetry_line = format_telemetry_line(ts, bmp_data, bme_data, mpu_data, mag_data, gps_data)
-        rfm_line = format_rfm_line(ts, bmp_data, bme_data, gps_data, mag_data)
+        send_gps_packet = False
+
+        if gps_data["ok"] and gps_data["connected"] and not gps_packet_sent_for_connection:
+            send_gps_packet = True
+            gps_packet_sent_for_connection = True
+
+        if gps_data["ok"] and gps_data["fix"] and not gps_fix_packet_sent_for_connection:
+            send_gps_packet = True
+            gps_fix_packet_sent_for_connection = True
+
+        rfm_packets = build_rfm_packets(
+            sample_id,
+            ts,
+            bmp_data,
+            bme_data,
+            mpu_data,
+            mag_data,
+            gps_data,
+            send_gps_packet
+        )
 
         # ---------- SD WRITE / HEALTH ----------
         current_sd_ok = sd_was_ok
@@ -975,37 +1134,45 @@ while True:
 
         # ---------- RFM SEND ----------
         current_rfm_ok = rfm_was_ok
-        rfm_tx_line = fit_rfm_payload(rfm_line)
+        all_rfm_ok = True
 
-        if RFM_LOG_EVERY_SEND:
-            tx_attempt_log = log_line(ts, "INFO", "RFM69", "TX_ATTEMPT {}".format(rfm_tx_line))
-            print(tx_attempt_log)
-            sdmod.write_log(tx_attempt_log)
+        for packet in rfm_packets:
+            rfm_tx_line = fit_rfm_payload(packet)
 
-        rfm_ok = rfm.send_line(rfm_tx_line)
-
-        if rfm_ok:
             if RFM_LOG_EVERY_SEND:
-                tx_ok_log = log_line(ts, "INFO", "RFM69", "TX_OK {}".format(rfm_tx_line))
-                print(tx_ok_log)
-                sdmod.write_log(tx_ok_log)
+                tx_attempt_log = log_line(ts, "INFO", "RFM69", "TX_ATTEMPT {}".format(rfm_tx_line))
+                print(tx_attempt_log)
+                sdmod.write_log(tx_attempt_log)
 
+            rfm_ok = rfm.send_line(rfm_tx_line)
+
+            if rfm_ok:
+                if RFM_LOG_EVERY_SEND:
+                    tx_ok_log = log_line(ts, "INFO", "RFM69", "TX_OK {}".format(rfm_tx_line))
+                    print(tx_ok_log)
+                    sdmod.write_log(tx_ok_log)
+            else:
+                all_rfm_ok = False
+                tx_fail_log = log_line(
+                    ts,
+                    "ERROR",
+                    "RFM69",
+                    "TX_FAIL {} ERROR={}".format(rfm_tx_line, rfm.last_error)
+                )
+                print(tx_fail_log)
+                sdmod.write_log(tx_fail_log)
+                break
+
+        if all_rfm_ok:
             if not rfm_was_ok:
                 sdmod.write_log(log_line(ts, "INFO", "RFM69", "RECONNECTED"))
             current_rfm_ok = True
         else:
-            tx_fail_log = log_line(
-                ts,
-                "ERROR",
-                "RFM69",
-                "TX_FAIL {} ERROR={}".format(rfm_tx_line, rfm.last_error)
-            )
-            print(tx_fail_log)
-            sdmod.write_log(tx_fail_log)
-
             if rfm_was_ok:
                 sdmod.write_log(log_line(ts, "ERROR", "RFM69", rfm.last_error))
-            rfm.reconnect()
+            if retry_due(last_rfm_reconnect_ms, RFM_RECONNECT_INTERVAL_MS):
+                rfm.reconnect()
+                last_rfm_reconnect_ms = utime.ticks_ms()
             current_rfm_ok = False
 
         rfm_was_ok = current_rfm_ok
@@ -1021,8 +1188,10 @@ while True:
             "gps": gps_led_state(gps_data),
             "rfm": current_rfm_ok,
         }
-        print(telemetry_line)
+        if DEBUG_TELEMETRY:
+            print(telemetry_line)
         show_two_status_cycles(status_map)
+        sample_id = (sample_id + 1) % 10000
 
     except Exception as e:
         print("MAIN LOOP ERROR:", e)
