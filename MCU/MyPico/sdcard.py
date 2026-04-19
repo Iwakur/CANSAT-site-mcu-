@@ -12,7 +12,7 @@ import os
 import utime
 
 
-_CMD_TIMEOUT = const(100)
+_CMD_TIMEOUT = const(20)
 
 _R1_IDLE_STATE = const(1 << 0)
 _R1_ILLEGAL_COMMAND = const(1 << 2)

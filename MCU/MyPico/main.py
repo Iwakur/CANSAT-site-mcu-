@@ -10,6 +10,8 @@ from gps6mv2 import GPS6MV2
 from sdcard import SDModule
 from status_leds import StatusLEDs
 from rfm69 import RFM69
+from tmp36 import TMP36
+from helpers import *
 
 
 # =========================
@@ -17,9 +19,9 @@ from rfm69 import RFM69
 # =========================
 
 # RTC pins
-RTC_CLK_PIN = 2
-RTC_DAT_PIN = 3
-RTC_RST_PIN = 4
+RTC_CLK_PIN = 27
+RTC_DAT_PIN = 28
+RTC_RST_PIN = 29
 
 # Shared I2C bus
 I2C_ID = 0
@@ -37,24 +39,27 @@ BME_SEA_LEVEL_PRESSURE = 1013.25
 
 # MPU6500
 MPU_ADDRESS = 0x68
-MPU_DO_CALIBRATION = True
+MPU_DO_CALIBRATION = False
 MPU_CALIBRATION_SAMPLES = 300
 
+# TMP36 analog temperature sensor
+TMP36_PIN = 26
+
 # Magnetometer (HW-246 / GY-271)
-MAG_ADDRESS = None
+MAG_ADDRESS = 0x2c
 
 # GPS (GY-GPS6MV2 / NEO-6M)
-GPS_UART_ID = 1
-GPS_RX_PIN = 5
+GPS_UART_ID = 0
+GPS_RX_PIN = 13
 GPS_TX_PIN = None
 GPS_BAUDRATE = 9600
 GPS_DEBUG = False
 
 # SD card SPI
-SD_SCK_PIN = 27
-SD_MOSI_PIN = 28
-SD_MISO_PIN = 26
-SD_CS_PIN = 29
+SD_SCK_PIN = 2
+SD_MOSI_PIN = 3
+SD_MISO_PIN = 4
+SD_CS_PIN = 5
 SD_BAUDRATE = 500000
 
 # LED module
@@ -77,656 +82,69 @@ LED_MAG = 3
 RFM_SCK_PIN = SD_SCK_PIN
 RFM_MOSI_PIN = SD_MOSI_PIN
 RFM_MISO_PIN = SD_MISO_PIN
-RFM_CS_PIN = 14
+RFM_CS_PIN = 6
 RFM_RST_PIN = None
 RFM_FREQ_MHZ = 434.0
 RFM_BITRATE = 4800
 RFM_TX_POWER_DBM = 13
 RFM_MAX_PAYLOAD_BYTES = 60
-RFM_LOG_EVERY_SEND = True
+RFM_LOG_EVERY_SEND = False
 DEBUG_TELEMETRY = True
+DEBUG_TELEMETRY_EVERY_SAMPLES = 10
+RFM_STATUS_EVERY_SAMPLES = 10
 
 # Main loop
 LOOP_DELAY_MS = 200
-SENSOR_RECONNECT_INTERVAL_MS = 3000
-RFM_RECONNECT_INTERVAL_MS = 3000
+SENSOR_RECONNECT_INTERVAL_MS = 30000
+RFM_RECONNECT_INTERVAL_MS = 10000
 
 # =========================
 # LED TIMINGS
 # =========================
-LED_INIT_CHECK_MS = 60
-LED_INIT_RESULT_MS = 100
+LED_INIT_CHECK_MS = 20
+LED_INIT_RESULT_MS = 40
 
-LED_CYCLE_CHECK_MS = 30
-LED_CYCLE_RESULT_MS = 60
+LED_CYCLE_CHECK_MS = 10
+LED_CYCLE_RESULT_MS = 20
 
-LED_BETWEEN_CYCLES_MS = 60
-LED_BLUE_BIP_MS = 40
+LED_BETWEEN_CYCLES_MS = 20
+LED_BLUE_BIP_MS = 15
 LED_DARK_BIP_MS = 10
 
-LED_MAIN_ERROR_RED_MS = 120
+LED_MAIN_ERROR_RED_MS = 60
 
 
 
 # =========================
 # HELPERS
 # =========================
-def now_text(rtc_data):
-    if rtc_data["ok"]:
-        return rtc_data["datetime"]
-    return "RTC_ERR"
-
-
-def log_line(timestamp, level, source, message):
-    return "{} [{}] {} {}".format(timestamp, level, source, message)
-
-
-def fmt_value(value, decimals=None, unit=""):
-    if value is None:
-        return "None"
-    if decimals is None:
-        return "{}{}".format(value, unit)
-    fmt = "{:." + str(decimals) + "f}{}"
-    return fmt.format(value, unit)
-
-
-def error_result_rtc(error_text):
-    return {
-        "ok": False,
-        "year": None,
-        "month": None,
-        "day": None,
-        "weekday": None,
-        "hour": None,
-        "minute": None,
-        "second": None,
-        "date": None,
-        "time": None,
-        "datetime": None,
-        "error": error_text,
-    }
-
-
-def error_result_bmp(error_text):
-    return {
-        "ok": False,
-        "temperature_c": None,
-        "pressure_hpa": None,
-        "altitude_m": None,
-        "error": error_text,
-    }
-
-
-def error_result_bme(error_text):
-    return {
-        "ok": False,
-        "temperature_c": None,
-        "pressure_hpa": None,
-        "humidity_pct": None,
-        "altitude_m": None,
-        "gas_ohms": None,
-        "gas_valid": False,
-        "error": error_text,
-    }
-
-
-def error_result_mpu(error_text):
-    return {
-        "ok": False,
-        "ax": None,
-        "ay": None,
-        "az": None,
-        "gx": None,
-        "gy": None,
-        "gz": None,
-        "temp": None,
-        "pitch": None,
-        "roll": None,
-        "error": error_text,
-    }
-
-
-def error_result_mag(error_text):
-    return {
-        "ok": False,
-        "chip": None,
-        "x": None,
-        "y": None,
-        "z": None,
-        "heading_deg": None,
-        "data_ready": False,
-        "overflow": False,
-        "error": error_text,
-    }
-
-
-def error_result_gps(error_text):
-    return {
-        "ok": False,
-        "connected": False,
-        "fix": False,
-        "latitude": None,
-        "longitude": None,
-        "altitude_m": None,
-        "absolute_altitude_m": None,
-        "satellites": None,
-        "hdop": None,
-        "speed_kmh": None,
-        "horizontal_speed_kmh": None,
-        "vertical_speed_ms": None,
-        "course_deg": None,
-        "compass_deg": None,
-        "utc_time_raw": None,
-        "utc_date_raw": None,
-        "utc_time": None,
-        "utc_date": None,
-        "rtc_update_ready": False,
-        "last_sentence": None,
-        "error": error_text,
-    }
-
-
-class StartupModule:
-    def __init__(self, name, factory, error_result):
-        self.name = name
-        self.factory = factory
-        self.error_result = error_result
-        self.module = None
-        self.ok = False
-        self.last_error = None
-        self.reconnect()
-
-    def __getattr__(self, name):
-        if self.module is not None:
-            return getattr(self.module, name)
-        raise AttributeError(name)
-
-    def reconnect(self):
-        try:
-            if self.module is not None and hasattr(self.module, "reconnect"):
-                result = self.module.reconnect()
-                self.ok = getattr(self.module, "ok", bool(result))
-                self.last_error = getattr(self.module, "last_error", None)
-                return self.ok
-
-            self.module = self.factory()
-            self.ok = getattr(self.module, "ok", True)
-            self.last_error = getattr(self.module, "last_error", None)
-            return self.ok
-
-        except Exception as e:
-            self.module = None
-            self.ok = False
-            self.last_error = str(e)
-            print("{} INIT ERROR: {}".format(self.name, self.last_error))
-            return False
-
-    def read(self):
-        if self.module is None:
-            return self.error_result(self.last_error or "{} not initialized".format(self.name))
-
-        try:
-            result = self.module.read()
-            self.ok = result["ok"] if isinstance(result, dict) and "ok" in result else getattr(self.module, "ok", True)
-            self.last_error = getattr(self.module, "last_error", None)
-            return result
-        except Exception as e:
-            self.ok = False
-            self.last_error = str(e)
-            return self.error_result(self.last_error)
-
-    def write_data(self, line):
-        if self.module is None and not self.reconnect():
-            return False
-        if self.module is None or not hasattr(self.module, "write_data"):
-            return False
-        result = self.module.write_data(line)
-        self.ok = getattr(self.module, "ok", bool(result))
-        self.last_error = getattr(self.module, "last_error", None)
-        return result
-
-    def write_log(self, line):
-        if self.module is None and not self.reconnect():
-            return False
-        if self.module is None or not hasattr(self.module, "write_log"):
-            return False
-        result = self.module.write_log(line)
-        self.ok = getattr(self.module, "ok", bool(result))
-        self.last_error = getattr(self.module, "last_error", None)
-        return result
-
-    def send_line(self, text):
-        if self.module is None and not self.reconnect():
-            return False
-        if self.module is None or not hasattr(self.module, "send_line"):
-            return False
-        result = self.module.send_line(text)
-        self.ok = getattr(self.module, "ok", bool(result))
-        self.last_error = getattr(self.module, "last_error", None)
-        return result
-
-    def debug_status(self):
-        if self.module is None or not hasattr(self.module, "debug_status"):
-            return {
-                "ok": False,
-                "error": self.last_error or "{} not initialized".format(self.name),
-            }
-        return self.module.debug_status()
-
-
-class NullSDModule:
-    def __init__(self, error_text):
-        self.ok = False
-        self.last_error = error_text
-
-    def reconnect(self):
-        return False
-
-    def write_data(self, line):
-        return False
-
-    def write_log(self, line):
-        return False
-
-
-class NullRFM69:
-    def __init__(self, error_text):
-        self.ok = False
-        self.last_error = error_text
-
-    def reconnect(self):
-        return False
-
-    def send_line(self, text):
-        return False
-
-    def debug_status(self):
-        return {
-            "ok": False,
-            "error": self.last_error,
-        }
-
-
-def fmt_rfm_int(value, width=None):
-    if value is None:
-        return "?"
-
-    try:
-        number = int(round(value))
-    except Exception:
-        return "?"
-
-    text = str(number)
-
-    if width is not None and number >= 0:
-        while len(text) < width:
-            text = "0" + text
-
-    return text
-
-
-def scale_int(value, factor=1):
-    if value is None:
-        return "?"
-    try:
-        return str(int(round(value * factor)))
-    except Exception:
-        return "?"
-
-
-def short_time(ts):
-    if ts == "RTC_ERR":
-        return "RTCERR"
-    return ts[-8:].replace(":", "")
-
-
-def weekday_from_date(year, month, day):
-    # Sakamoto algorithm: returns DS1302 weekday 1..7, Monday=1.
-    offsets = (0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4)
-    if month < 3:
-        year -= 1
-    sunday_based = (year + year // 4 - year // 100 + year // 400 + offsets[month - 1] + day) % 7
-    return 7 if sunday_based == 0 else sunday_based
-
-
-def sync_rtc_from_gps(rtc, gps_data):
-    if not gps_data["ok"] or not gps_data["rtc_update_ready"]:
-        return False
-    try:
-        date_text = gps_data["utc_date"]
-        time_text = gps_data["utc_time"]
-        year = int(date_text[0:4])
-        month = int(date_text[5:7])
-        day = int(date_text[8:10])
-        hour = int(time_text[0:2])
-        minute = int(time_text[3:5])
-        second = int(time_text[6:8])
-        weekday = weekday_from_date(year, month, day)
-        return rtc.set_datetime(year, month, day, weekday, hour, minute, second)
-    except Exception:
-        return False
-
-
-def retry_due(last_ms, interval_ms):
-    return utime.ticks_diff(utime.ticks_ms(), last_ms) >= interval_ms
-
-
-def format_bmp_text(bmp_data):
-    if not bmp_data["ok"]:
-        return "BMP[ERR:{}]".format(bmp_data.get("error", "unknown"))
-    return "BMP[T={} P={} A={}]".format(
-        fmt_value(bmp_data["temperature_c"], 1, "C"),
-        fmt_value(bmp_data["pressure_hpa"], 1, "hPa"),
-        fmt_value(bmp_data["altitude_m"], 1, "m")
-    )
-
-
-def format_bme_text(bme_data):
-    if not bme_data["ok"]:
-        return "BME[ERR]"
-    return "BME[T={} P={} H={} G={}ohm A={}]".format(
-        fmt_value(bme_data["temperature_c"], 1, "C"),
-        fmt_value(bme_data["pressure_hpa"], 1, "hPa"),
-        fmt_value(bme_data["humidity_pct"], 1, "%"),
-        fmt_value(bme_data["gas_ohms"]),
-        fmt_value(bme_data["altitude_m"], 1, "m")
-    )
-
-
-def format_mpu_text(mpu_data):
-    if not mpu_data["ok"]:
-        return "MPU[ERR]"
-    return "MPU[Ax={} Ay={} Az={} Gx={} Gy={} Gz={} Tmp={} Pit={} Rol={}]".format(
-        fmt_value(mpu_data["ax"], 2, "g"),
-        fmt_value(mpu_data["ay"], 2, "g"),
-        fmt_value(mpu_data["az"], 2, "g"),
-        fmt_value(mpu_data["gx"], 2, "dps"),
-        fmt_value(mpu_data["gy"], 2, "dps"),
-        fmt_value(mpu_data["gz"], 2, "dps"),
-        fmt_value(mpu_data["temp"], 1, "C"),
-        fmt_value(mpu_data["pitch"], 1, "deg"),
-        fmt_value(mpu_data["roll"], 1, "deg")
-    )
-
-
-def format_mag_text(mag_data):
-    if not mag_data["ok"]:
-        return "MAG[ERR:{}]".format(mag_data.get("error", "unknown"))
-    return "MAG[X={} Y={} Z={} H={} CHIP={}]".format(
-        fmt_value(mag_data["x"]),
-        fmt_value(mag_data["y"]),
-        fmt_value(mag_data["z"]),
-        fmt_value(mag_data["heading_deg"], 1, "deg"),
-        mag_data["chip"]
-    )
-
-
-def format_gps_text(gps_data):
-    if not gps_data["ok"]:
-        return "GPS[ERR:{}]".format(gps_data.get("error", "unknown"))
-    return "GPS[FIX={} SAT={} LAT={} LON={} ALT={}]".format(
-        int(gps_data["fix"]),
-        fmt_value(gps_data["satellites"]),
-        fmt_value(gps_data["latitude"]),
-        fmt_value(gps_data["longitude"]),
-        fmt_value(gps_data["absolute_altitude_m"], 1, "m"),
-    )
-
-
-def format_telemetry_line(ts, bmp_data, bme_data, mpu_data, mag_data, gps_data):
-    return "T={} {} {} {} {} {}".format(
-        ts,
-        format_bmp_text(bmp_data),
-        format_bme_text(bme_data),
-        format_mpu_text(mpu_data),
-        format_mag_text(mag_data),
-        format_gps_text(gps_data)
-    )
-
-
-def format_rfm_line(ts, bmp_data, bme_data, gps_data, mag_data):
-    time_text = ts[-8:].replace(":", "") if ts != "RTC_ERR" else "RTCERR"
-    bmp_alt = bmp_data["altitude_m"] if bmp_data["ok"] else None
-    bme_temp = bme_data["temperature_c"] if bme_data["ok"] else None
-    bme_hum = bme_data["humidity_pct"] if bme_data["ok"] else None
-    gps_fix = int(gps_data["fix"]) if gps_data["ok"] else 0
-    gps_sat = gps_data["satellites"] if gps_data["ok"] else None
-    mag_x = mag_data["x"] if mag_data["ok"] else None
-    mag_y = mag_data["y"] if mag_data["ok"] else None
-    mag_z = mag_data["z"] if mag_data["ok"] else None
-
-    return "{},A{},T{},H{},G{},S{},M{},{},{}".format(
-        time_text,
-        fmt_rfm_int(bmp_alt),
-        fmt_rfm_int(bme_temp),
-        fmt_rfm_int(bme_hum),
-        gps_fix,
-        fmt_rfm_int(gps_sat, 2),
-        fmt_rfm_int(mag_x),
-        fmt_rfm_int(mag_y),
-        fmt_rfm_int(mag_z)
-    )
-
-
-def build_env_packet(sample_id, ts, bmp_data, bme_data):
-    bmp_temp = bmp_data["temperature_c"] if bmp_data["ok"] else None
-    bmp_pressure = bmp_data["pressure_hpa"] if bmp_data["ok"] else None
-    bme_temp = bme_data["temperature_c"] if bme_data["ok"] else None
-    bme_pressure = bme_data["pressure_hpa"] if bme_data["ok"] else None
-    bme_humidity = bme_data["humidity_pct"] if bme_data["ok"] else None
-    bme_gas = bme_data["gas_ohms"] if bme_data["ok"] else None
-
-    return "E,{},{},{},{},{},{},{},{}".format(
-        sample_id,
-        short_time(ts),
-        scale_int(bmp_temp, 10),
-        scale_int(bmp_pressure, 10),
-        scale_int(bme_temp, 10),
-        scale_int(bme_pressure, 10),
-        scale_int(bme_humidity, 10),
-        scale_int(bme_gas),
-    )
-
-
-def build_motion_packet(sample_id, mpu_data):
-    return "M,{},A,{},{},{},{},{},{}".format(
-        sample_id,
-        scale_int(mpu_data["ax"] if mpu_data["ok"] else None, 1000),
-        scale_int(mpu_data["ay"] if mpu_data["ok"] else None, 1000),
-        scale_int(mpu_data["az"] if mpu_data["ok"] else None, 1000),
-        scale_int(mpu_data["gx"] if mpu_data["ok"] else None, 100),
-        scale_int(mpu_data["gy"] if mpu_data["ok"] else None, 100),
-        scale_int(mpu_data["gz"] if mpu_data["ok"] else None, 100),
-    )
-
-
-def build_mag_packet(sample_id, mag_data):
-    return "M,{},C,{},{},{}".format(
-        sample_id,
-        scale_int(mag_data["x"] if mag_data["ok"] else None),
-        scale_int(mag_data["y"] if mag_data["ok"] else None),
-        scale_int(mag_data["z"] if mag_data["ok"] else None),
-    )
-
-
-def build_gps_packet(sample_id, gps_data):
-    return "G,{},{},{},{},{},{},{},{}".format(
-        sample_id,
-        int(gps_data["fix"]) if gps_data["ok"] else 0,
-        scale_int(gps_data["satellites"] if gps_data["ok"] else None),
-        scale_int(gps_data["latitude"] if gps_data["ok"] else None, 1000000),
-        scale_int(gps_data["longitude"] if gps_data["ok"] else None, 1000000),
-        scale_int(gps_data["absolute_altitude_m"] if gps_data["ok"] else None, 10),
-        gps_data["utc_date"] if gps_data["ok"] and gps_data["utc_date"] else "?",
-        gps_data["utc_time"] if gps_data["ok"] and gps_data["utc_time"] else "?",
-    )
-
-
-def build_rfm_packets(sample_id, ts, bmp_data, bme_data, mpu_data, mag_data, gps_data, send_gps):
-    packets = [
-        build_env_packet(sample_id, ts, bmp_data, bme_data),
-        build_motion_packet(sample_id, mpu_data),
-    ]
-    if send_gps:
-        packets.append(build_gps_packet(sample_id, gps_data))
-    packets.append(build_mag_packet(sample_id, mag_data))
-    return packets
-
-
-def fit_rfm_payload(text):
-    payload = text.encode("utf-8")
-
-    if len(payload) <= RFM_MAX_PAYLOAD_BYTES:
-        return text
-
-    return payload[:RFM_MAX_PAYLOAD_BYTES].decode("utf-8")
-
-
-def rfm_debug_line(timestamp, status):
-    if status["ok"]:
-        version_note = "OK" if status["version_ok"] else "BAD"
-        return (
-            "{} [DEBUG] RFM69 VERSION=0x{:02X} OPMODE=0x{:02X} "
-            "IRQ1=0x{:02X} IRQ2=0x{:02X} VERSION_STATUS={}"
-        ).format(
-            timestamp,
-            status["version"],
-            status["opmode"],
-            status["irq1"],
-            status["irq2"],
-            version_note
-        )
-
-    return "{} [DEBUG] RFM69 DEBUG_ERROR {}".format(
-        timestamp,
-        status.get("error", "unknown")
-    )
-
-
-def led_off(index):
-    if hasattr(leds, "off"):
-        leds.off(index)
-        return
-    if hasattr(leds, "set_off"):
-        leds.set_off(index)
-        return
-    if hasattr(leds, "clear"):
-        leds.clear(index)
-        return
-
-
-def leds_all_off():
-    if hasattr(leds, "all_off"):
-        leds.all_off()
-        return
-    if hasattr(leds, "off_all"):
-        leds.off_all()
-        return
-    for i in range(LED_COUNT):
-        led_off(i)
-
-
-def show_led_status(index, is_ok, check_ms, result_ms):
-    leds.checking(index)
-    utime.sleep_ms(check_ms)
-
-    if is_ok:
-        leds.ok(index)
-    else:
-        leds.fail(index)
-
-    utime.sleep_ms(result_ms)
-
-
-def gps_led_state(gps_data):
-    if gps_data["ok"] and gps_data["connected"] and gps_data["fix"]:
-        return "fix"
-    if gps_data["ok"] and gps_data["connected"]:
-        return "connected"
-    return "fail"
-
-
-def show_gps_status(gps_state, check_ms, result_ms):
-    leds.checking(LED_GPS)
-    utime.sleep_ms(check_ms)
-
-    if gps_state == "fix":
-        leds.ok(LED_GPS)
-    elif gps_state == "connected":
-        leds.info(LED_GPS)
-    else:
-        leds.fail(LED_GPS)
-
-    utime.sleep_ms(result_ms)
-
-
-def blue_bip():
-    leds.blink_all(leds.BLUE, LED_BLUE_BIP_MS)
-
-
-def dark_bip():
-    leds_all_off()
-    utime.sleep_ms(LED_DARK_BIP_MS)
-
-
-def show_two_status_cycles(status_map):
-    # Cycle 1: RTC, BMP, BME, MPU
-    show_led_status(LED_RTC, status_map["rtc"], LED_CYCLE_CHECK_MS, LED_CYCLE_RESULT_MS)
-    show_led_status(LED_BMP, status_map["bmp"], LED_CYCLE_CHECK_MS, LED_CYCLE_RESULT_MS)
-    show_led_status(LED_BME, status_map["bme"], LED_CYCLE_CHECK_MS, LED_CYCLE_RESULT_MS)
-    show_led_status(LED_MPU, status_map["mpu"], LED_CYCLE_CHECK_MS, LED_CYCLE_RESULT_MS)
-
-    blue_bip()
-    utime.sleep_ms(LED_BETWEEN_CYCLES_MS)
-
-    # Cycle 2: SD, GPS, RFM, MAG
-    led_off(LED_MAG)
-    show_led_status(LED_SD, status_map["sd"], LED_CYCLE_CHECK_MS, LED_CYCLE_RESULT_MS)
-    show_gps_status(status_map["gps"], LED_CYCLE_CHECK_MS, LED_CYCLE_RESULT_MS)
-    show_led_status(LED_RFM, status_map["rfm"], LED_CYCLE_CHECK_MS, LED_CYCLE_RESULT_MS)
-    show_led_status(LED_MAG, status_map["mag"], LED_CYCLE_CHECK_MS, LED_CYCLE_RESULT_MS)
-
-    led_off(LED_MAG)
-    dark_bip()
-
-
-def show_init_module(index, ok):
-    leds.checking(index)
-    utime.sleep_ms(LED_INIT_CHECK_MS)
-
-    if ok:
-        leds.ok(index)
-    else:
-        leds.fail(index)
-
-    utime.sleep_ms(LED_INIT_RESULT_MS)
-
-
-def show_init_cycles(init_status_map):
-    # cycle 1
-    show_init_module(LED_RTC, init_status_map["rtc"])
-    show_init_module(LED_BMP, init_status_map["bmp"])
-    show_init_module(LED_BME, init_status_map["bme"])
-    show_init_module(LED_MPU, init_status_map["mpu"])
-
-    blue_bip()
-    utime.sleep_ms(LED_BETWEEN_CYCLES_MS)
-
-    # cycle 2
-    led_off(LED_MAG)
-    show_init_module(LED_SD, init_status_map["sd"])
-    show_gps_status(init_status_map["gps"], LED_INIT_CHECK_MS, LED_INIT_RESULT_MS)
-    show_init_module(LED_RFM, init_status_map["rfm"])
-    show_init_module(LED_MAG, init_status_map["mag"])
-
-    led_off(LED_MAG)
-    dark_bip()
+# Helper functions and wrapper classes live in helpers.py.
 
 
 # =========================
 # INIT LEDS
 # =========================
 leds = StatusLEDs(pin_num=LED_PIN, count=LED_COUNT, brightness=20)
+configure_helpers(
+    rfm_max_payload_bytes=RFM_MAX_PAYLOAD_BYTES,
+    leds_obj=leds,
+    led_count=LED_COUNT,
+    led_rtc=LED_RTC,
+    led_bmp=LED_BMP,
+    led_bme=LED_BME,
+    led_mpu=LED_MPU,
+    led_sd=LED_SD,
+    led_gps=LED_GPS,
+    led_rfm=LED_RFM,
+    led_mag=LED_MAG,
+    led_init_check_ms=LED_INIT_CHECK_MS,
+    led_init_result_ms=LED_INIT_RESULT_MS,
+    led_cycle_check_ms=LED_CYCLE_CHECK_MS,
+    led_cycle_result_ms=LED_CYCLE_RESULT_MS,
+    led_between_cycles_ms=LED_BETWEEN_CYCLES_MS,
+    led_blue_bip_ms=LED_BLUE_BIP_MS,
+    led_dark_bip_ms=LED_DARK_BIP_MS,
+)
 leds.startup_test()
 
 
@@ -756,6 +174,7 @@ rtc = StartupModule(
     error_result_rtc
 )
 rtc_test = rtc.read()
+rtc.set_datetime(2026, 4, 19, 7, 18, 25, 40)
 print("RTC INIT:", rtc_test)
 
 
@@ -828,6 +247,20 @@ print("MPU INIT:", mpu_test)
 
 
 # =========================
+# INIT TMP36
+# =========================
+tmp36 = StartupModule(
+    "TMP36",
+    lambda: TMP36(
+        pin=TMP36_PIN
+    ),
+    error_result_tmp36
+)
+tmp36_test = tmp36.read()
+print("TMP36 INIT:", tmp36_test)
+
+
+# =========================
 # INIT MAGNETOMETER
 # =========================
 mag = StartupModule(
@@ -862,6 +295,13 @@ print("GPS INIT:", gps_test)
 
 
 # =========================
+# PREPARE SHARED SPI BUS
+# =========================
+Pin(SD_CS_PIN, Pin.OUT, value=1)
+Pin(RFM_CS_PIN, Pin.OUT, value=1)
+
+
+# =========================
 # INIT SD MODULE
 # =========================
 sdmod = StartupModule(
@@ -883,6 +323,7 @@ if sdmod.ok:
     print("SD CARD READY")
 else:
     print("SD CARD NOT READY:", sdmod.last_error)
+    sdmod = NullSDModule(sdmod.last_error)
 
 
 # =========================
@@ -961,6 +402,7 @@ rtc_was_ok = rtc_test["ok"]
 bmp_was_ok = bmp_test["ok"]
 bme_was_ok = bme_test["ok"]
 mpu_was_ok = mpu_test["ok"]
+tmp36_was_ok = tmp36_test["ok"]
 mag_was_ok = mag_test["ok"]
 gps_was_ok = gps_test["ok"]
 gps_had_fix = gps_test["fix"] if gps_test["ok"] else False
@@ -975,6 +417,7 @@ last_rtc_reconnect_ms = utime.ticks_ms()
 last_bmp_reconnect_ms = utime.ticks_ms()
 last_bme_reconnect_ms = utime.ticks_ms()
 last_mpu_reconnect_ms = utime.ticks_ms()
+last_tmp36_reconnect_ms = utime.ticks_ms()
 last_mag_reconnect_ms = utime.ticks_ms()
 last_gps_reconnect_ms = utime.ticks_ms()
 last_rfm_reconnect_ms = utime.ticks_ms()
@@ -1044,6 +487,21 @@ while True:
                 last_mpu_reconnect_ms = utime.ticks_ms()
             mpu_was_ok = False
 
+        # ---------- TMP36 ----------
+        tmp36_data = tmp36.read()
+
+        if tmp36_data["ok"]:
+            if not tmp36_was_ok:
+                sdmod.write_log(log_line(ts, "INFO", "TMP36", "RECONNECTED"))
+            tmp36_was_ok = True
+        else:
+            if tmp36_was_ok:
+                sdmod.write_log(log_line(ts, "ERROR", "TMP36", tmp36_data.get("error", "unknown")))
+            if retry_due(last_tmp36_reconnect_ms, SENSOR_RECONNECT_INTERVAL_MS):
+                tmp36.reconnect()
+                last_tmp36_reconnect_ms = utime.ticks_ms()
+            tmp36_was_ok = False
+
         # ---------- MAGNETOMETER ----------
         mag_data = mag.read()
 
@@ -1097,15 +555,12 @@ while True:
                 sdmod.write_log(log_line(ts, "WARN", "GPS", "RTC_SYNC_FAILED"))
 
         # ---------- FORMAT OUTPUTS ----------
-        telemetry_line = format_telemetry_line(ts, bmp_data, bme_data, mpu_data, mag_data, gps_data)
-        send_gps_packet = False
+        telemetry_line = format_telemetry_line(ts, bmp_data, bme_data, mpu_data, tmp36_data, mag_data, gps_data)
 
         if gps_data["ok"] and gps_data["connected"] and not gps_packet_sent_for_connection:
-            send_gps_packet = True
             gps_packet_sent_for_connection = True
 
         if gps_data["ok"] and gps_data["fix"] and not gps_fix_packet_sent_for_connection:
-            send_gps_packet = True
             gps_fix_packet_sent_for_connection = True
 
         rfm_packets = build_rfm_packets(
@@ -1113,10 +568,10 @@ while True:
             ts,
             bmp_data,
             bme_data,
+            tmp36_data,
             mpu_data,
             mag_data,
-            gps_data,
-            send_gps_packet
+            gps_data
         )
 
         # ---------- SD WRITE / HEALTH ----------
@@ -1166,6 +621,8 @@ while True:
         if all_rfm_ok:
             if not rfm_was_ok:
                 sdmod.write_log(log_line(ts, "INFO", "RFM69", "RECONNECTED"))
+            if RFM_STATUS_EVERY_SAMPLES and sample_id % RFM_STATUS_EVERY_SAMPLES == 0:
+                print("{} [INFO] RFM69 TX_OK sample={} packets={}".format(ts, sample_id, len(rfm_packets)))
             current_rfm_ok = True
         else:
             if rfm_was_ok:
@@ -1188,7 +645,10 @@ while True:
             "gps": gps_led_state(gps_data),
             "rfm": current_rfm_ok,
         }
-        if DEBUG_TELEMETRY:
+        if DEBUG_TELEMETRY and (
+            not DEBUG_TELEMETRY_EVERY_SAMPLES
+            or sample_id % DEBUG_TELEMETRY_EVERY_SAMPLES == 0
+        ):
             print(telemetry_line)
         show_two_status_cycles(status_map)
         sample_id = (sample_id + 1) % 10000

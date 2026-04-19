@@ -225,6 +225,8 @@ class BMP581:
 
     def _check_address(self, i2c, address: int) -> bool:
         try:
+            if address in i2c.scan():
+                return True
             i2c.writeto(address, b"")
             return True
         except OSError:

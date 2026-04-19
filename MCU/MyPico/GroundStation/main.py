@@ -19,8 +19,9 @@ from rfm69 import RFM69
 # WiFi / HTTP forwarding
 WIFI_SSID = "Proximus-Home-01E0"
 WIFI_PASSWORD = "wyyf9j26shyac"
-SERVER_URL = "http://192.168.1.14/cansat"
+SERVER_URL = "http://192.168.1.14/GitHub/CANSAT/Site/api/receive.php"
 HTTP_SEND_ENABLED = True
+HTTP_LOG_SEND_ENABLED = True
 WIFI_RECONNECT_INTERVAL_MS = 5000
 
 # SD card SPI
@@ -203,6 +204,7 @@ def parse_packet(packet):
             "bme_p": unscale(parts[6], 10),
             "bme_h": unscale(parts[7], 10),
             "bme_g": safe_int(parts[8]),
+            "tmp36_t": unscale(parts[9], 10) if len(parts) >= 10 else None,
         }
 
     if packet_type == "M" and len(parts) >= 4:
@@ -272,6 +274,7 @@ def readable_line(sample):
         "T={} BMP[T={} P={} A={}] "
         "BME[T={} P={} H={} G={}ohm A={}] "
         "MPU[Ax={} Ay={} Az={} Gx={} Gy={} Gz={} Pit={} Rol={}] "
+        "TMP36[T={}] "
         "MAG[X={} Y={} Z={} H={}] "
         "GPS[FIX={} SAT={} LAT={} LON={} ALT={}]"
     ).format(
@@ -292,6 +295,7 @@ def readable_line(sample):
         fmt_value(sample.get("gz"), 2, "dps"),
         fmt_value(pitch, 1, "deg"),
         fmt_value(roll, 1, "deg"),
+        fmt_value(sample.get("tmp36_t"), 1, "C"),
         fmt_value(mx),
         fmt_value(my),
         fmt_value(sample.get("mz")),
@@ -312,10 +316,11 @@ last_wifi_reconnect_ms = 0
 sdmod = None
 rfm = None
 _writing_status_log = False
+_sending_status_log = False
 
 
 def log_status(level, source, message):
-    global _writing_status_log
+    global _writing_status_log, _sending_status_log
 
     line = "{} [{}] {} {}".format(now_text(), level, source, message)
     print(line)
@@ -330,6 +335,14 @@ def log_status(level, source, message):
     except Exception:
         pass
     _writing_status_log = False
+
+    if HTTP_LOG_SEND_ENABLED and HTTP_SEND_ENABLED and wifi_connected() and not _sending_status_log:
+        try:
+            _sending_status_log = True
+            send_http_payload(line, "log", source, False)
+        except Exception:
+            pass
+        _sending_status_log = False
 
 
 def wifi_connected():
@@ -373,24 +386,32 @@ def connect_wifi():
         return False
 
 
-def send_http_get(line):
+def send_http_payload(line, payload_type="telemetry", source="ground_station", log_events=True):
     if not HTTP_SEND_ENABLED:
-        log_status("INFO", "HTTP", "SEND_DISABLED")
+        if log_events:
+            log_status("INFO", "HTTP", "SEND_DISABLED")
         return False
 
     if not wifi_connected():
-        log_status("WARN", "HTTP", "SKIP_WIFI_DOWN URL={}".format(SERVER_URL))
+        if log_events:
+            log_status("WARN", "HTTP", "SKIP_WIFI_DOWN URL={}".format(SERVER_URL))
         return False
 
     url_text = SERVER_URL
+    sock = None
 
     try:
         host, port, path = parse_http_url(SERVER_URL)
-        query = "line={}".format(urlencode(line))
+        query = "type={}&source={}&line={}".format(
+            urlencode(payload_type),
+            urlencode(source),
+            urlencode(line)
+        )
         full_path = "{}{}{}".format(path, "&" if "?" in path else "?", query)
         url_text = "http://{}:{}{}".format(host, port, full_path)
 
-        log_status("INFO", "HTTP", "GET {}".format(url_text))
+        if log_events:
+            log_status("INFO", "HTTP", "GET type={}".format(payload_type))
 
         addr = socket.getaddrinfo(host, port)[0][-1]
         sock = socket.socket()
@@ -403,16 +424,23 @@ def send_http_get(line):
         ).format(full_path, host)
         sock.send(request.encode("utf-8"))
         sock.close()
-        log_status("INFO", "HTTP", "SENT")
+        if log_events:
+            log_status("INFO", "HTTP", "SENT type={}".format(payload_type))
         return True
 
     except Exception as e:
-        log_status("ERROR", "HTTP", "GET_FAILED URL={} ERROR={}".format(url_text, e))
+        if log_events:
+            log_status("ERROR", "HTTP", "GET_FAILED URL={} ERROR={}".format(url_text, e))
         try:
-            sock.close()
+            if sock is not None:
+                sock.close()
         except Exception:
             pass
         return False
+
+
+def send_http_get(line):
+    return send_http_payload(line, "telemetry", "ground_station", True)
 
 
 # =========================
@@ -615,6 +643,7 @@ if DEBUG_RFM:
 # =========================
 sample_cache = {}
 written_ids = {}
+last_written_by_id = {}
 sd_was_ok = sdmod.ok if sdmod is not None else False
 rfm_was_ok = rfm.ok if rfm is not None else False
 wifi_was_ok = wifi_connected()
@@ -700,24 +729,27 @@ while True:
             else:
                 sample = apply_packet(sample_cache, parsed)
 
-                if parsed["type"] == "C":
+                if parsed["type"] in ("G", "C"):
                     line = readable_line(sample)
-                    print(line)
+                    if last_written_by_id.get(sample["id"]) != line:
+                        print(line)
 
-                    data_ok = write_sd_data(line)
-                    if data_ok:
-                        sd_was_ok = True
-                    else:
-                        sd_was_ok = False
+                        data_ok = write_sd_data(line)
+                        if data_ok:
+                            sd_was_ok = True
+                        else:
+                            sd_was_ok = False
 
-                    send_http_get(line)
-                    written_ids[sample["id"]] = True
+                        send_http_get(line)
+                        written_ids[sample["id"]] = True
+                        last_written_by_id[sample["id"]] = line
 
                 if len(sample_cache) > 8:
                     for key in list(sample_cache.keys()):
                         if key != sample.get("id"):
                             sample_cache.pop(key, None)
                             written_ids.pop(key, None)
+                            last_written_by_id.pop(key, None)
 
         else:
             now_ms = utime.ticks_ms()
@@ -732,6 +764,8 @@ while True:
                 if DEBUG_RFM:
                     status_line = debug_line(ts, rfm.debug_status())
                     print(status_line)
+                    if HTTP_LOG_SEND_ENABLED and HTTP_SEND_ENABLED and wifi_connected():
+                        send_http_payload(status_line, "log", "RFM69", False)
                     try:
                         if sdmod is not None and sdmod.ok:
                             sdmod.write_log(status_line)
