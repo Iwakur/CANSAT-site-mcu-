@@ -59,18 +59,16 @@ EXPOSED_PINS = (
 
 GPS_RX_CANDIDATES = EXPOSED_PINS
 GPS_BAUDS = (4800, 9600, 19200, 38400, 57600, 115200)
-MAG_ADDRESSES = (0x0D, 0x0C, 0x1E)
+MAG_ADDRESSES = (0x2C, 0x0D, 0x0C, 0x1E)
 
 KNOWN_I2C = {
+    0x2C: "QMC5883P magnetometer",
     0x0C: "QMC5883L magnetometer alt",
     0x0D: "QMC5883L magnetometer",
     0x1E: "HMC5883L magnetometer",
-    0x2C: "unknown/possible pressure sensor",
-    0x46: "BMP581/BMP585 pressure sensor",
-    0x47: "BMP581/BMP585 pressure sensor",
     0x68: "MPU6500/MPU6050 IMU or DS3231 RTC",
     0x69: "MPU6500/MPU6050 IMU alternate",
-    0x76: "BME/BMP environmental sensor",
+    0x76: "environmental sensor",
     0x77: "BME688/BME680 environmental sensor",
 }
 
@@ -203,10 +201,10 @@ def scan_i2c():
         print("  MPU: detected")
     if 0x77 in addresses:
         print("  BME688/BME680: detected")
-    if 0x0C not in addresses and 0x0D not in addresses and 0x1E not in addresses:
+    if 0x2C not in addresses and 0x0C not in addresses and 0x0D not in addresses and 0x1E not in addresses:
         print("  MAG: not detected")
     if 0x2C in addresses:
-        print("  Pressure/unknown 0x2c: detected, exact chip still unknown")
+        print("  MAG QMC5883P: detected")
 
     return addresses
 
@@ -226,7 +224,7 @@ def probe_i2c_address(i2c, address):
 def scan_all_i2c_addresses():
     line("FULL I2C ADDRESS PROBE ON GP0/GP1")
     print("Probing every normal 7-bit I2C address from 0x03 to 0x77.")
-    print("Magnetometer targets: QMC5883L/DA5883=0x0D, HMC5883L/L883=0x1E.")
+    print("Magnetometer targets: QMC5883P=0x2C, QMC5883L/DA5883=0x0D, HMC5883L/L883=0x1E.")
 
     try:
         i2c = I2C(
@@ -254,7 +252,12 @@ def scan_all_i2c_addresses():
     else:
         print("All ACKed addresses:", hex_list(found))
 
-    for target, name in ((0x0D, "QMC5883L / DA5883"), (0x1E, "HMC5883L / L883"), (0x0C, "QMC5883L alternate")):
+    for target, name in (
+        (0x2C, "QMC5883P"),
+        (0x0D, "QMC5883L / DA5883"),
+        (0x1E, "HMC5883L / L883"),
+        (0x0C, "QMC5883L alternate"),
+    ):
         if target in found:
             print("MAG TARGET FOUND: {} at {}".format(name, hex(target)))
         else:
@@ -293,8 +296,8 @@ def safe_read_i2c_reg(i2c, address, register, length=1):
 
 def scan_magnetometer_deep():
     line("MAGNETOMETER HW-246 / GY-271 SEARCH")
-    print("Looking for QMC5883L/DA5883 at 0x0D or HMC5883L/L883 at 0x1E.")
-    print("Also checks QMC alternate address 0x0C.")
+    print("Looking for QMC5883P at 0x2C, QMC5883L/DA5883 at 0x0D, or HMC5883L/L883 at 0x1E.")
+    print("Also checks QMC5883L alternate address 0x0C.")
 
     found = []
     floating = []
@@ -309,6 +312,7 @@ def scan_magnetometer_deep():
         sleep_ms(20)
         print("Direct target probes on confirmed bus GP0/GP1:")
         for addr, name in (
+            (0x2C, "QMC5883P"),
             (0x0D, "QMC5883L / DA5883"),
             (0x1E, "HMC5883L / L883"),
             (0x0C, "QMC5883L alternate"),
@@ -316,7 +320,14 @@ def scan_magnetometer_deep():
             ok, method = probe_i2c_address(main_i2c, addr)
             print("  {} {} -> {}".format(hex(addr), name, "ACK " + method if ok else "no ACK"))
             if ok:
-                if addr in (0x0D, 0x0C):
+                if addr == 0x2C:
+                    ident = safe_read_i2c_reg(main_i2c, addr, 0x00, 1)
+                    status = safe_read_i2c_reg(main_i2c, addr, 0x09, 1)
+                    print("    QMC5883P ID/status: ID_0x00={} STATUS_0x09={}".format(
+                        hex(ident[0]) if ident else "read-failed",
+                        hex(status[0]) if status else "read-failed"
+                    ))
+                elif addr in (0x0D, 0x0C):
                     ident = safe_read_i2c_reg(main_i2c, addr, 0x0D, 1)
                     status = safe_read_i2c_reg(main_i2c, addr, 0x06, 1)
                     print("    QMC ID/status: ID_0x0D={} STATUS_0x06={}".format(
@@ -356,7 +367,14 @@ def scan_magnetometer_deep():
                 i2c_id, pin_name(sda), pin_name(scl), hex(addr), chip
             ))
 
-            if addr in (0x0D, 0x0C):
+            if addr == 0x2C:
+                ident = safe_read_i2c_reg(i2c, addr, 0x00, 1)
+                status = safe_read_i2c_reg(i2c, addr, 0x09, 1)
+                print("  QMC5883P probe: ID_REG_0x00={} STATUS_0x09={}".format(
+                    hex(ident[0]) if ident else "read-failed",
+                    hex(status[0]) if status else "read-failed"
+                ))
+            elif addr in (0x0D, 0x0C):
                 ident = safe_read_i2c_reg(i2c, addr, 0x0D, 1)
                 status = safe_read_i2c_reg(i2c, addr, 0x06, 1)
                 print("  QMC probe: ID_REG_0x0D={} STATUS_0x06={}".format(
@@ -373,7 +391,7 @@ def scan_magnetometer_deep():
 
     if not found:
         print("MAG status: not found on valid exposed I2C pin pairs.")
-        print("Expected if soldered to main bus: SDA={} SCL={} and address 0x0D, 0x0C, or 0x1E.".format(
+        print("Expected if soldered to main bus: SDA={} SCL={} and address 0x2C, 0x0D, 0x0C, or 0x1E.".format(
             pin_name(PINS["i2c_sda"]), pin_name(PINS["i2c_scl"])
         ))
         print("Check magnetometer VCC, GND, SDA, SCL, and whether the module is actually installed.")
@@ -825,7 +843,7 @@ def final_summary(i2c, mag, rtc, rfm, sd, gps, tmp36):
     print("GPS:         {}".format("OK" if gps else "NO DATA"))
     print("TMP36:       {}".format("OK" if tmp36 else "SUSPICIOUS"))
     print("")
-    print("Main unresolved items should now be GPS, magnetometer if installed, and identifying I2C 0x2c.")
+    print("Main unresolved item should now be GPS if the magnetometer is detected at 0x2c.")
 
 
 def main():

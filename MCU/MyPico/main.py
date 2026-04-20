@@ -1,8 +1,7 @@
-from machine import Pin, I2C
+from machine import Pin, I2C, SPI
 import utime
 
 from rtc import DS1302
-from bmp580 import BMP580
 from bme688 import BME688
 from mpu6500 import MPU6500
 from gy271 import GY271
@@ -29,10 +28,6 @@ I2C_SCL_PIN = 1
 I2C_SDA_PIN = 0
 I2C_FREQ = 100000
 
-# BMP580
-BMP_ADDRESS = None
-BMP_SEA_LEVEL_PRESSURE = 1013.25
- 
 # BME688
 BME_ADDRESS = 0x77
 BME_SEA_LEVEL_PRESSURE = 1013.25
@@ -68,7 +63,7 @@ LED_COUNT = 4
 
 # LED cycle 1
 LED_RTC = 0
-LED_BMP = 1
+LED_TMP36 = 1
 LED_BME = 2
 LED_MPU = 3
 
@@ -84,8 +79,11 @@ RFM_MOSI_PIN = SD_MOSI_PIN
 RFM_MISO_PIN = SD_MISO_PIN
 RFM_CS_PIN = 6
 RFM_RST_PIN = None
+RFM_SPI_ID = 0
+RFM_SPI_BAUDRATE = 50000
 RFM_FREQ_MHZ = 434.0
 RFM_BITRATE = 4800
+RFM_FREQ_DEVIATION = 90000
 RFM_TX_POWER_DBM = 13
 RFM_MAX_PAYLOAD_BYTES = 60
 RFM_LOG_EVERY_SEND = False
@@ -121,30 +119,309 @@ LED_MAIN_ERROR_RED_MS = 60
 # Helper functions and wrapper classes live in helpers.py.
 
 
+class CompatibleRFM69:
+    REG_VERSION = 0x10
+    REG_OPMODE = 0x01
+    REG_IRQFLAGS1 = 0x27
+    REG_IRQFLAGS2 = 0x28
+    MODE_STDBY = 0x04
+    MODE_TX = 0x0C
+    EXPECTED_VERSION = 0x24
+
+    def __init__(
+        self,
+        sck_pin,
+        mosi_pin,
+        miso_pin,
+        cs_pin,
+        rst_pin,
+        spi_id,
+        spi_baudrate,
+        frequency_mhz,
+        bitrate,
+        frequency_deviation,
+        tx_power_dbm,
+    ):
+        self.sck_pin = sck_pin
+        self.mosi_pin = mosi_pin
+        self.miso_pin = miso_pin
+        self.cs_pin = cs_pin
+        self.rst_pin = rst_pin
+        self.spi_id = spi_id
+        self.spi_baudrate = spi_baudrate
+        self.frequency_mhz = frequency_mhz
+        self.bitrate = bitrate
+        self.frequency_deviation = frequency_deviation
+        self.tx_power_dbm = tx_power_dbm
+        self.radio = None
+        self.spi = None
+        self.nss = None
+        self.reset_pin = None
+        self.native_send_line = False
+        self.ok = False
+        self.last_error = None
+        self.reconnect()
+
+    def reconnect(self):
+        self.ok = False
+        self.last_error = None
+
+        try:
+            try:
+                radio = RFM69(
+                    sck_pin=self.sck_pin,
+                    mosi_pin=self.mosi_pin,
+                    miso_pin=self.miso_pin,
+                    cs_pin=self.cs_pin,
+                    rst_pin=self.rst_pin,
+                    frequency_mhz=self.frequency_mhz,
+                    bitrate=self.bitrate,
+                    tx_power_dbm=self.tx_power_dbm
+                )
+                self.native_send_line = hasattr(radio, "send_line")
+            except TypeError as e:
+                if "sck_pin" not in str(e):
+                    raise
+
+                self.spi = SPI(
+                    self.spi_id,
+                    baudrate=self.spi_baudrate,
+                    polarity=0,
+                    phase=0,
+                    firstbit=SPI.MSB,
+                    sck=Pin(self.sck_pin),
+                    mosi=Pin(self.mosi_pin),
+                    miso=Pin(self.miso_pin)
+                )
+                self.nss = Pin(self.cs_pin, Pin.OUT, value=True)
+                if self.rst_pin is None:
+                    self.reset_pin = None
+                else:
+                    self.reset_pin = Pin(self.rst_pin, Pin.OUT, value=False)
+
+                radio = RFM69(spi=self.spi, nss=self.nss, reset=self.reset_pin)
+                if hasattr(radio, "spi_write"):
+                    radio.spi_write(0x02, 0x00)
+                radio.frequency_mhz = self.frequency_mhz
+                radio.bitrate = self.bitrate
+                if hasattr(radio, "frequency_deviation"):
+                    radio.frequency_deviation = self.frequency_deviation
+                if hasattr(type(radio), "preamble_length"):
+                    radio.preamble_length = 3
+                if hasattr(type(radio), "packet_format"):
+                    radio.packet_format = 1
+                if hasattr(type(radio), "dc_free"):
+                    radio.dc_free = 0
+                if hasattr(type(radio), "crc_on"):
+                    radio.crc_on = 1
+                if hasattr(type(radio), "aes_on"):
+                    radio.aes_on = 0
+                if hasattr(radio, "tx_power"):
+                    radio.tx_power = self.tx_power_dbm
+                self.native_send_line = False
+
+            self.radio = radio
+            version = self._read_version()
+            if version != self.EXPECTED_VERSION:
+                raise OSError("rfm bad version 0x{:02X}".format(version))
+
+            self.ok = getattr(radio, "ok", True)
+            self.last_error = getattr(radio, "last_error", None)
+            return self.ok
+
+        except Exception as e:
+            self.radio = None
+            self.ok = False
+            self.last_error = str(e)
+            return False
+
+    def _read_version(self):
+        if hasattr(self.radio, "_read_reg"):
+            return self.radio._read_reg(self.REG_VERSION)
+        return self.radio.spi_read(self.REG_VERSION)
+
+    def _read_reg(self, register):
+        if hasattr(self.radio, "_read_reg"):
+            return self.radio._read_reg(register)
+        return self.radio.spi_read(register)
+
+    def _set_mode(self, mode):
+        if hasattr(self.radio, "_set_mode"):
+            self.radio._set_mode(mode)
+        else:
+            self.radio.set_mode(mode)
+
+    def send_line(self, text):
+        try:
+            if not self.ok:
+                if not self.reconnect():
+                    return False
+
+            if self.native_send_line:
+                result = self.radio.send_line(text)
+                self.ok = getattr(self.radio, "ok", bool(result))
+                self.last_error = getattr(self.radio, "last_error", None)
+                return result
+
+            payload = text.encode("utf-8")
+            if len(payload) > RFM_MAX_PAYLOAD_BYTES:
+                payload = payload[:RFM_MAX_PAYLOAD_BYTES]
+
+            self._set_mode(self.MODE_STDBY)
+            self._read_reg(self.REG_IRQFLAGS1)
+            self._read_reg(self.REG_IRQFLAGS2)
+            self.radio.spi_write_fifo(payload)
+            self._set_mode(self.MODE_TX)
+
+            start = utime.ticks_ms()
+            while True:
+                if self._read_reg(self.REG_IRQFLAGS2) & 0x08:
+                    break
+                if utime.ticks_diff(utime.ticks_ms(), start) > 500:
+                    raise OSError("rfm tx timeout")
+                utime.sleep_ms(5)
+
+            self._set_mode(self.MODE_STDBY)
+            self.ok = True
+            self.last_error = None
+            return True
+
+        except Exception as e:
+            self.ok = False
+            self.last_error = str(e)
+            try:
+                self._set_mode(self.MODE_STDBY)
+            except Exception:
+                pass
+            return False
+
+    def debug_status(self):
+        try:
+            if self.radio is None:
+                raise OSError(self.last_error or "not initialized")
+            version = self._read_reg(self.REG_VERSION)
+            opmode = self._read_reg(self.REG_OPMODE)
+            irq1 = self._read_reg(self.REG_IRQFLAGS1)
+            irq2 = self._read_reg(self.REG_IRQFLAGS2)
+            return {
+                "ok": True,
+                "version": version,
+                "opmode": opmode,
+                "irq1": irq1,
+                "irq2": irq2,
+                "version_ok": version == self.EXPECTED_VERSION,
+            }
+        except Exception as e:
+            return {
+                "ok": False,
+                "error": str(e),
+            }
+
+
+def configure_status_helpers():
+    configure_helpers(
+        RFM_MAX_PAYLOAD_BYTES,
+        leds,
+        LED_COUNT,
+        LED_RTC,
+        LED_TMP36,
+        LED_BME,
+        LED_MPU,
+        LED_SD,
+        LED_GPS,
+        LED_RFM,
+        LED_MAG,
+        LED_INIT_CHECK_MS,
+        LED_INIT_RESULT_MS,
+        LED_CYCLE_CHECK_MS,
+        LED_CYCLE_RESULT_MS,
+        LED_BETWEEN_CYCLES_MS,
+        LED_BLUE_BIP_MS,
+        LED_DARK_BIP_MS,
+    )
+
+
+def format_telemetry_line(ts, tmp_data, bme_data, mpu_data, mag_data, gps_data):
+    return "T={} {} {} {} {} {}".format(
+        ts,
+        format_tmp36_text(tmp_data),
+        format_bme_text(bme_data),
+        format_mpu_text(mpu_data),
+        format_mag_text(mag_data),
+        format_gps_text(gps_data)
+    )
+
+
+def build_env_packet(sample_id, ts, tmp_data, bme_data):
+    tmp_temp = tmp_data["temperature_c"] if tmp_data["ok"] else None
+    bme_temp = bme_data["temperature_c"] if bme_data["ok"] else None
+    bme_pressure = bme_data["pressure_hpa"] if bme_data["ok"] else None
+    bme_humidity = bme_data["humidity_pct"] if bme_data["ok"] else None
+    bme_gas = bme_data["gas_ohms"] if bme_data["ok"] else None
+
+    return "E,{},{},{},{},{},{},{}".format(
+        sample_id,
+        short_time(ts),
+        scale_int(tmp_temp, 10),
+        scale_int(bme_temp, 10),
+        scale_int(bme_pressure, 10),
+        scale_int(bme_humidity, 10),
+        scale_int(bme_gas),
+    )
+
+
+def build_rfm_packets(sample_id, ts, tmp_data, bme_data, mpu_data, mag_data, gps_data):
+    return [
+        build_env_packet(sample_id, ts, tmp_data, bme_data),
+        build_motion_packet(sample_id, mpu_data),
+        build_mag_packet(sample_id, mag_data),
+        build_gps_packet(sample_id, gps_data),
+    ]
+
+
+def show_two_status_cycles(status_map):
+    show_led_status(LED_RTC, status_map["rtc"], LED_CYCLE_CHECK_MS, LED_CYCLE_RESULT_MS)
+    show_led_status(LED_TMP36, status_map["tmp36"], LED_CYCLE_CHECK_MS, LED_CYCLE_RESULT_MS)
+    show_led_status(LED_BME, status_map["bme"], LED_CYCLE_CHECK_MS, LED_CYCLE_RESULT_MS)
+    show_led_status(LED_MPU, status_map["mpu"], LED_CYCLE_CHECK_MS, LED_CYCLE_RESULT_MS)
+
+    blue_bip()
+    utime.sleep_ms(LED_BETWEEN_CYCLES_MS)
+
+    led_off(LED_MAG)
+    show_led_status(LED_SD, status_map["sd"], LED_CYCLE_CHECK_MS, LED_CYCLE_RESULT_MS)
+    show_gps_status(status_map["gps"], LED_CYCLE_CHECK_MS, LED_CYCLE_RESULT_MS)
+    show_led_status(LED_RFM, status_map["rfm"], LED_CYCLE_CHECK_MS, LED_CYCLE_RESULT_MS)
+    show_led_status(LED_MAG, status_map["mag"], LED_CYCLE_CHECK_MS, LED_CYCLE_RESULT_MS)
+
+    led_off(LED_MAG)
+    dark_bip()
+
+
+def show_init_cycles(init_status_map):
+    show_init_module(LED_RTC, init_status_map["rtc"])
+    show_init_module(LED_TMP36, init_status_map["tmp36"])
+    show_init_module(LED_BME, init_status_map["bme"])
+    show_init_module(LED_MPU, init_status_map["mpu"])
+
+    blue_bip()
+    utime.sleep_ms(LED_BETWEEN_CYCLES_MS)
+
+    led_off(LED_MAG)
+    show_init_module(LED_SD, init_status_map["sd"])
+    show_gps_status(init_status_map["gps"], LED_INIT_CHECK_MS, LED_INIT_RESULT_MS)
+    show_init_module(LED_RFM, init_status_map["rfm"])
+    show_init_module(LED_MAG, init_status_map["mag"])
+
+    led_off(LED_MAG)
+    dark_bip()
+
+
 # =========================
 # INIT LEDS
 # =========================
 leds = StatusLEDs(pin_num=LED_PIN, count=LED_COUNT, brightness=20)
-configure_helpers(
-    rfm_max_payload_bytes=RFM_MAX_PAYLOAD_BYTES,
-    leds_obj=leds,
-    led_count=LED_COUNT,
-    led_rtc=LED_RTC,
-    led_bmp=LED_BMP,
-    led_bme=LED_BME,
-    led_mpu=LED_MPU,
-    led_sd=LED_SD,
-    led_gps=LED_GPS,
-    led_rfm=LED_RFM,
-    led_mag=LED_MAG,
-    led_init_check_ms=LED_INIT_CHECK_MS,
-    led_init_result_ms=LED_INIT_RESULT_MS,
-    led_cycle_check_ms=LED_CYCLE_CHECK_MS,
-    led_cycle_result_ms=LED_CYCLE_RESULT_MS,
-    led_between_cycles_ms=LED_BETWEEN_CYCLES_MS,
-    led_blue_bip_ms=LED_BLUE_BIP_MS,
-    led_dark_bip_ms=LED_DARK_BIP_MS,
-)
+configure_status_helpers()
 leds.startup_test()
 
 
@@ -179,22 +456,17 @@ print("RTC INIT:", rtc_test)
 
 
 # =========================
-# INIT BMP580
+# INIT TMP36
 # =========================
-bmp = StartupModule(
-    "BMP580",
-    lambda: BMP580(
-        i2c=i2c,
-        address=BMP_ADDRESS,
-        sea_level_pressure=BMP_SEA_LEVEL_PRESSURE,
-        pressure_osr=BMP580.OSR128,
-        temperature_osr=BMP580.OSR8,
-        iir_coef=BMP580.COEF_7,
+tmp36 = StartupModule(
+    "TMP36",
+    lambda: TMP36(
+        pin=TMP36_PIN
     ),
-    error_result_bmp
+    error_result_tmp36
 )
-bmp_test = bmp.read()
-print("BMP INIT:", bmp_test)
+tmp36_test = tmp36.read()
+print("TMP36 INIT:", tmp36_test)
 
 
 # =========================
@@ -244,20 +516,6 @@ if MPU_DO_CALIBRATION and mpu.ok:
 
 mpu_test = mpu.read()
 print("MPU INIT:", mpu_test)
-
-
-# =========================
-# INIT TMP36
-# =========================
-tmp36 = StartupModule(
-    "TMP36",
-    lambda: TMP36(
-        pin=TMP36_PIN
-    ),
-    error_result_tmp36
-)
-tmp36_test = tmp36.read()
-print("TMP36 INIT:", tmp36_test)
 
 
 # =========================
@@ -331,14 +589,17 @@ else:
 # =========================
 rfm = StartupModule(
     "RFM69",
-    lambda: RFM69(
+    lambda: CompatibleRFM69(
         sck_pin=RFM_SCK_PIN,
         mosi_pin=RFM_MOSI_PIN,
         miso_pin=RFM_MISO_PIN,
         cs_pin=RFM_CS_PIN,
         rst_pin=RFM_RST_PIN,
+        spi_id=RFM_SPI_ID,
+        spi_baudrate=RFM_SPI_BAUDRATE,
         frequency_mhz=RFM_FREQ_MHZ,
         bitrate=RFM_BITRATE,
+        frequency_deviation=RFM_FREQ_DEVIATION,
         tx_power_dbm=RFM_TX_POWER_DBM
     ),
     lambda error_text: {"ok": False, "error": error_text}
@@ -349,13 +610,14 @@ if rfm.ok:
 else:
     print("RFM69 NOT READY:", rfm.last_error)
 
-print("CANSAT RFM CONFIG: SCK=GP{} MOSI=GP{} MISO=GP{} CS=GP{} FREQ={}MHz BITRATE={} TX_POWER={}dBm".format(
+print("CANSAT RFM CONFIG: SCK=GP{} MOSI=GP{} MISO=GP{} CS=GP{} FREQ={}MHz BITRATE={} FDEV={} TX_POWER={}dBm".format(
     RFM_SCK_PIN,
     RFM_MOSI_PIN,
     RFM_MISO_PIN,
     RFM_CS_PIN,
     RFM_FREQ_MHZ,
     RFM_BITRATE,
+    RFM_FREQ_DEVIATION,
     RFM_TX_POWER_DBM
 ))
 
@@ -363,13 +625,14 @@ sdmod.write_log(log_line(
     now_text(rtc_test),
     "INFO",
     "RFM69",
-    "CONFIG SCK=GP{} MOSI=GP{} MISO=GP{} CS=GP{} FREQ={}MHz BITRATE={} TX_POWER={}dBm".format(
+    "CONFIG SCK=GP{} MOSI=GP{} MISO=GP{} CS=GP{} FREQ={}MHz BITRATE={} FDEV={} TX_POWER={}dBm".format(
         RFM_SCK_PIN,
         RFM_MOSI_PIN,
         RFM_MISO_PIN,
         RFM_CS_PIN,
         RFM_FREQ_MHZ,
         RFM_BITRATE,
+        RFM_FREQ_DEVIATION,
         RFM_TX_POWER_DBM
     )
 ))
@@ -384,7 +647,7 @@ sdmod.write_log(rfm_debug)
 # =========================
 init_status_map = {
     "rtc": rtc_test["ok"],
-    "bmp": bmp_test["ok"],
+    "tmp36": tmp36_test["ok"],
     "bme": bme_test["ok"],
     "mpu": mpu_test["ok"],
     "mag": mag_test["ok"],
@@ -399,7 +662,6 @@ show_init_cycles(init_status_map)
 # STATUS FLAGS
 # =========================
 rtc_was_ok = rtc_test["ok"]
-bmp_was_ok = bmp_test["ok"]
 bme_was_ok = bme_test["ok"]
 mpu_was_ok = mpu_test["ok"]
 tmp36_was_ok = tmp36_test["ok"]
@@ -414,7 +676,6 @@ gps_packet_sent_for_connection = False
 gps_fix_packet_sent_for_connection = False
 
 last_rtc_reconnect_ms = utime.ticks_ms()
-last_bmp_reconnect_ms = utime.ticks_ms()
 last_bme_reconnect_ms = utime.ticks_ms()
 last_mpu_reconnect_ms = utime.ticks_ms()
 last_tmp36_reconnect_ms = utime.ticks_ms()
@@ -442,20 +703,20 @@ while True:
                 last_rtc_reconnect_ms = utime.ticks_ms()
             rtc_was_ok = False
 
-        # ---------- BMP580 ----------
-        bmp_data = bmp.read()
+        # ---------- TMP36 ----------
+        tmp36_data = tmp36.read()
 
-        if bmp_data["ok"]:
-            if not bmp_was_ok:
-                sdmod.write_log(log_line(ts, "INFO", "BMP580", "RECONNECTED"))
-            bmp_was_ok = True
+        if tmp36_data["ok"]:
+            if not tmp36_was_ok:
+                sdmod.write_log(log_line(ts, "INFO", "TMP36", "RECONNECTED"))
+            tmp36_was_ok = True
         else:
-            if bmp_was_ok:
-                sdmod.write_log(log_line(ts, "ERROR", "BMP580", bmp_data.get("error", "unknown")))
-            if retry_due(last_bmp_reconnect_ms, SENSOR_RECONNECT_INTERVAL_MS):
-                bmp.reconnect()
-                last_bmp_reconnect_ms = utime.ticks_ms()
-            bmp_was_ok = False
+            if tmp36_was_ok:
+                sdmod.write_log(log_line(ts, "ERROR", "TMP36", tmp36_data.get("error", "unknown")))
+            if retry_due(last_tmp36_reconnect_ms, SENSOR_RECONNECT_INTERVAL_MS):
+                tmp36.reconnect()
+                last_tmp36_reconnect_ms = utime.ticks_ms()
+            tmp36_was_ok = False
 
         # ---------- BME688 ----------
         bme_data = bme.read()
@@ -486,21 +747,6 @@ while True:
                 mpu.reconnect()
                 last_mpu_reconnect_ms = utime.ticks_ms()
             mpu_was_ok = False
-
-        # ---------- TMP36 ----------
-        tmp36_data = tmp36.read()
-
-        if tmp36_data["ok"]:
-            if not tmp36_was_ok:
-                sdmod.write_log(log_line(ts, "INFO", "TMP36", "RECONNECTED"))
-            tmp36_was_ok = True
-        else:
-            if tmp36_was_ok:
-                sdmod.write_log(log_line(ts, "ERROR", "TMP36", tmp36_data.get("error", "unknown")))
-            if retry_due(last_tmp36_reconnect_ms, SENSOR_RECONNECT_INTERVAL_MS):
-                tmp36.reconnect()
-                last_tmp36_reconnect_ms = utime.ticks_ms()
-            tmp36_was_ok = False
 
         # ---------- MAGNETOMETER ----------
         mag_data = mag.read()
@@ -555,7 +801,7 @@ while True:
                 sdmod.write_log(log_line(ts, "WARN", "GPS", "RTC_SYNC_FAILED"))
 
         # ---------- FORMAT OUTPUTS ----------
-        telemetry_line = format_telemetry_line(ts, bmp_data, bme_data, mpu_data, tmp36_data, mag_data, gps_data)
+        telemetry_line = format_telemetry_line(ts, tmp36_data, bme_data, mpu_data, mag_data, gps_data)
 
         if gps_data["ok"] and gps_data["connected"] and not gps_packet_sent_for_connection:
             gps_packet_sent_for_connection = True
@@ -566,9 +812,8 @@ while True:
         rfm_packets = build_rfm_packets(
             sample_id,
             ts,
-            bmp_data,
-            bme_data,
             tmp36_data,
+            bme_data,
             mpu_data,
             mag_data,
             gps_data
@@ -637,7 +882,7 @@ while True:
         # ---------- LED STATUS CYCLES ----------
         status_map = {
             "rtc": rtc_data["ok"],
-            "bmp": bmp_data["ok"],
+            "tmp36": tmp36_data["ok"],
             "bme": bme_data["ok"],
             "mpu": mpu_data["ok"],
             "mag": mag_data["ok"],

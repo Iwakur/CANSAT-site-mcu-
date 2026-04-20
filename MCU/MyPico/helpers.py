@@ -3,7 +3,7 @@ import utime
 RFM_MAX_PAYLOAD_BYTES = 60
 LED_COUNT = 4
 LED_RTC = 0
-LED_BMP = 1
+LED_TMP36 = 1
 LED_BME = 2
 LED_MPU = 3
 LED_SD = 0
@@ -25,7 +25,7 @@ def configure_helpers(
     leds_obj=None,
     led_count=None,
     led_rtc=None,
-    led_bmp=None,
+    led_tmp36=None,
     led_bme=None,
     led_mpu=None,
     led_sd=None,
@@ -40,7 +40,7 @@ def configure_helpers(
     led_blue_bip_ms=None,
     led_dark_bip_ms=None,
 ):
-    global RFM_MAX_PAYLOAD_BYTES, LED_COUNT, LED_RTC, LED_BMP, LED_BME, LED_MPU
+    global RFM_MAX_PAYLOAD_BYTES, LED_COUNT, LED_RTC, LED_TMP36, LED_BME, LED_MPU
     global LED_SD, LED_GPS, LED_RFM, LED_MAG, LED_INIT_CHECK_MS, LED_INIT_RESULT_MS
     global LED_CYCLE_CHECK_MS, LED_CYCLE_RESULT_MS, LED_BETWEEN_CYCLES_MS
     global LED_BLUE_BIP_MS, LED_DARK_BIP_MS, leds
@@ -53,8 +53,8 @@ def configure_helpers(
         LED_COUNT = led_count
     if led_rtc is not None:
         LED_RTC = led_rtc
-    if led_bmp is not None:
-        LED_BMP = led_bmp
+    if led_tmp36 is not None:
+        LED_TMP36 = led_tmp36
     if led_bme is not None:
         LED_BME = led_bme
     if led_mpu is not None:
@@ -114,16 +114,6 @@ def error_result_rtc(error_text):
         "date": None,
         "time": None,
         "datetime": None,
-        "error": error_text,
-    }
-
-
-def error_result_bmp(error_text):
-    return {
-        "ok": False,
-        "temperature_c": None,
-        "pressure_hpa": None,
-        "altitude_m": None,
         "error": error_text,
     }
 
@@ -392,16 +382,6 @@ def retry_due(last_ms, interval_ms):
     return utime.ticks_diff(utime.ticks_ms(), last_ms) >= interval_ms
 
 
-def format_bmp_text(bmp_data):
-    if not bmp_data["ok"]:
-        return "BMP[ERR:{}]".format(bmp_data.get("error", "unknown"))
-    return "BMP[T={} P={} A={}]".format(
-        fmt_value(bmp_data["temperature_c"], 1, "C"),
-        fmt_value(bmp_data["pressure_hpa"], 1, "hPa"),
-        fmt_value(bmp_data["altitude_m"], 1, "m")
-    )
-
-
 def format_bme_text(bme_data):
     if not bme_data["ok"]:
         return "BME[ERR]"
@@ -464,61 +444,56 @@ def format_gps_text(gps_data):
     )
 
 
-def format_telemetry_line(ts, bmp_data, bme_data, mpu_data, tmp_data, mag_data, gps_data):
-    return "T={} {} {} {} {} {} {}".format(
+def format_telemetry_line(ts, tmp_data, bme_data, mpu_data, mag_data, gps_data):
+    return "T={} {} {} {} {} {}".format(
         ts,
-        format_bmp_text(bmp_data),
+        format_tmp36_text(tmp_data),
         format_bme_text(bme_data),
         format_mpu_text(mpu_data),
-        format_tmp36_text(tmp_data),
         format_mag_text(mag_data),
         format_gps_text(gps_data)
     )
 
 
-def format_rfm_line(ts, bmp_data, bme_data, gps_data, mag_data):
+def format_rfm_line(ts, tmp_data, bme_data, mag_data, gps_data):
     time_text = ts[-8:].replace(":", "") if ts != "RTC_ERR" else "RTCERR"
-    bmp_alt = bmp_data["altitude_m"] if bmp_data["ok"] else None
+    tmp_temp = tmp_data["temperature_c"] if tmp_data["ok"] else None
     bme_temp = bme_data["temperature_c"] if bme_data["ok"] else None
     bme_hum = bme_data["humidity_pct"] if bme_data["ok"] else None
-    gps_fix = int(gps_data["fix"]) if gps_data["ok"] else 0
-    gps_sat = gps_data["satellites"] if gps_data["ok"] else None
     mag_x = mag_data["x"] if mag_data["ok"] else None
     mag_y = mag_data["y"] if mag_data["ok"] else None
     mag_z = mag_data["z"] if mag_data["ok"] else None
+    gps_fix = int(gps_data["fix"]) if gps_data["ok"] else 0
+    gps_sat = gps_data["satellites"] if gps_data["ok"] else None
 
-    return "{},A{},T{},H{},G{},S{},M{},{},{}".format(
+    return "{},TMP{},BT{},BH{},M{},{},{},G{},S{}".format(
         time_text,
-        fmt_rfm_int(bmp_alt),
+        fmt_rfm_int(tmp_temp),
         fmt_rfm_int(bme_temp),
         fmt_rfm_int(bme_hum),
-        gps_fix,
-        fmt_rfm_int(gps_sat, 2),
         fmt_rfm_int(mag_x),
         fmt_rfm_int(mag_y),
-        fmt_rfm_int(mag_z)
+        fmt_rfm_int(mag_z),
+        gps_fix,
+        fmt_rfm_int(gps_sat, 2)
     )
 
 
-def build_env_packet(sample_id, ts, bmp_data, bme_data, tmp_data):
-    bmp_temp = bmp_data["temperature_c"] if bmp_data["ok"] else None
-    bmp_pressure = bmp_data["pressure_hpa"] if bmp_data["ok"] else None
+def build_env_packet(sample_id, ts, tmp_data, bme_data):
+    tmp_temp = tmp_data["temperature_c"] if tmp_data["ok"] else None
     bme_temp = bme_data["temperature_c"] if bme_data["ok"] else None
     bme_pressure = bme_data["pressure_hpa"] if bme_data["ok"] else None
     bme_humidity = bme_data["humidity_pct"] if bme_data["ok"] else None
     bme_gas = bme_data["gas_ohms"] if bme_data["ok"] else None
-    tmp_temp = tmp_data["temperature_c"] if tmp_data["ok"] else None
 
-    return "E,{},{},{},{},{},{},{},{},{}".format(
+    return "E,{},{},{},{},{},{},{}".format(
         sample_id,
         short_time(ts),
-        scale_int(bmp_temp, 10),
-        scale_int(bmp_pressure, 10),
+        scale_int(tmp_temp, 10),
         scale_int(bme_temp, 10),
         scale_int(bme_pressure, 10),
         scale_int(bme_humidity, 10),
         scale_int(bme_gas),
-        scale_int(tmp_temp, 10),
     )
 
 
@@ -556,12 +531,12 @@ def build_gps_packet(sample_id, gps_data):
     )
 
 
-def build_rfm_packets(sample_id, ts, bmp_data, bme_data, tmp_data, mpu_data, mag_data, gps_data):
+def build_rfm_packets(sample_id, ts, tmp_data, bme_data, mpu_data, mag_data, gps_data):
     packets = [
-        build_env_packet(sample_id, ts, bmp_data, bme_data, tmp_data),
+        build_env_packet(sample_id, ts, tmp_data, bme_data),
         build_motion_packet(sample_id, mpu_data),
-        build_gps_packet(sample_id, gps_data),
         build_mag_packet(sample_id, mag_data),
+        build_gps_packet(sample_id, gps_data),
     ]
     return packets
 
@@ -663,9 +638,9 @@ def dark_bip():
 
 
 def show_two_status_cycles(status_map):
-    # Cycle 1: RTC, BMP, BME, MPU
+    # Cycle 1: RTC, TMP36, BME, MPU
     show_led_status(LED_RTC, status_map["rtc"], LED_CYCLE_CHECK_MS, LED_CYCLE_RESULT_MS)
-    show_led_status(LED_BMP, status_map["bmp"], LED_CYCLE_CHECK_MS, LED_CYCLE_RESULT_MS)
+    show_led_status(LED_TMP36, status_map["tmp36"], LED_CYCLE_CHECK_MS, LED_CYCLE_RESULT_MS)
     show_led_status(LED_BME, status_map["bme"], LED_CYCLE_CHECK_MS, LED_CYCLE_RESULT_MS)
     show_led_status(LED_MPU, status_map["mpu"], LED_CYCLE_CHECK_MS, LED_CYCLE_RESULT_MS)
 
@@ -698,7 +673,7 @@ def show_init_module(index, ok):
 def show_init_cycles(init_status_map):
     # cycle 1
     show_init_module(LED_RTC, init_status_map["rtc"])
-    show_init_module(LED_BMP, init_status_map["bmp"])
+    show_init_module(LED_TMP36, init_status_map["tmp36"])
     show_init_module(LED_BME, init_status_map["bme"])
     show_init_module(LED_MPU, init_status_map["mpu"])
 

@@ -16,10 +16,20 @@ try {
         json_response(['ok' => false, 'error' => 'Dataset not found.'], 404);
     }
 
+    $columns = implode(', ', [
+        'id', 'dataset_id', 'received_at', 'line_number', 'raw_line', 'device_time',
+        'tmp36_temp', 'tmp36_voltage', 'tmp36_raw',
+        'bme_temp', 'bme_pressure', 'bme_humidity', 'bme_gas', 'bme_altitude',
+        'ax', 'ay', 'az', 'gx', 'gy', 'gz', 'pitch', 'roll',
+        'mag_x', 'mag_y', 'mag_z', 'heading',
+        'gps_fix', 'gps_satellites', 'gps_lat', 'gps_lon', 'gps_altitude',
+        'parse_ok', 'parse_message',
+    ]);
+
     $stmt = $pdo->prepare(
-        "SELECT *
+        "SELECT {$columns}
          FROM (
-            SELECT * FROM telemetry
+            SELECT {$columns} FROM telemetry
             WHERE dataset_id = ?
             ORDER BY id DESC
             LIMIT {$limit}

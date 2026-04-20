@@ -19,7 +19,6 @@ SAMPLES = 42
 DELAY_MS = 150
 HTTP_TIMEOUT_S = 4
 
-BMP_SEA_LEVEL_PRESSURE = 1013.25
 BME_SEA_LEVEL_PRESSURE = 1013.25
 BASE_LAT = 50.85045
 BASE_LON = 4.34878
@@ -191,18 +190,23 @@ def parse_packet(packet):
     packet_type = parts[0]
     sample_id = parts[1]
 
-    if packet_type == "E" and len(parts) >= 9:
+    if packet_type == "E" and len(parts) >= 8:
+        if len(parts) >= 10:
+            bme_offset = 5
+            tmp36_index = 9
+        else:
+            tmp36_index = 3
+            bme_offset = 4
+
         return {
             "type": "E",
             "id": sample_id,
             "rtc": parts[2],
-            "bmp_t": unscale(parts[3], 10),
-            "bmp_p": unscale(parts[4], 10),
-            "bme_t": unscale(parts[5], 10),
-            "bme_p": unscale(parts[6], 10),
-            "bme_h": unscale(parts[7], 10),
-            "bme_g": safe_int(parts[8]),
-            "tmp36_t": unscale(parts[9], 10) if len(parts) >= 10 else None,
+            "bme_t": unscale(parts[bme_offset], 10),
+            "bme_p": unscale(parts[bme_offset + 1], 10),
+            "bme_h": unscale(parts[bme_offset + 2], 10),
+            "bme_g": safe_int(parts[bme_offset + 3]),
+            "tmp36_t": unscale(parts[tmp36_index], 10) if len(parts) > tmp36_index else None,
         }
 
     if packet_type == "M" and len(parts) >= 4:
@@ -253,7 +257,6 @@ def apply_packet(sample_cache, parsed):
 
 def readable_line(sample):
     rtc = sample.get("rtc") or "RTCERR"
-    bmp_p = sample.get("bmp_p")
     bme_p = sample.get("bme_p")
     ax = sample.get("ax")
     ay = sample.get("ay")
@@ -261,23 +264,19 @@ def readable_line(sample):
     mx = sample.get("mx")
     my = sample.get("my")
 
-    bmp_alt = altitude_from_pressure(bmp_p, BMP_SEA_LEVEL_PRESSURE)
     bme_alt = altitude_from_pressure(bme_p, BME_SEA_LEVEL_PRESSURE)
     pitch, roll = pitch_roll_from_accel(ax, ay, az)
     heading = heading_from_mag(mx, my)
 
     return (
-        "T={} BMP[T={} P={} A={}] "
+        "T={} TMP36[T={}] "
         "BME[T={} P={} H={} G={}ohm A={}] "
         "MPU[Ax={} Ay={} Az={} Gx={} Gy={} Gz={} Pit={} Rol={}] "
-        "TMP36[T={}] "
         "MAG[X={} Y={} Z={} H={}] "
         "GPS[FIX={} SAT={} LAT={} LON={} ALT={}]"
     ).format(
         rtc,
-        fmt_value(sample.get("bmp_t"), 1, "C"),
-        fmt_value(bmp_p, 1, "hPa"),
-        fmt_value(bmp_alt, 1, "m"),
+        fmt_value(sample.get("tmp36_t"), 1, "C"),
         fmt_value(sample.get("bme_t"), 1, "C"),
         fmt_value(bme_p, 1, "hPa"),
         fmt_value(sample.get("bme_h"), 1, "%"),
@@ -291,7 +290,6 @@ def readable_line(sample):
         fmt_value(sample.get("gz"), 2, "dps"),
         fmt_value(pitch, 1, "deg"),
         fmt_value(roll, 1, "deg"),
-        fmt_value(sample.get("tmp36_t"), 1, "C"),
         fmt_value(mx),
         fmt_value(my),
         fmt_value(sample.get("mz")),
@@ -333,11 +331,9 @@ def log_time(sample_id):
 def build_packets(sample_id, altitude, problem=None):
     wobble = math.sin(sample_id / 3.0)
     temp_drop = altitude / 1000.0 * 6.0
-    bmp_temp = 21.5 - temp_drop + math.sin(sample_id / 5.0) * 0.4
-    bme_temp = bmp_temp + 0.7
-    tmp36_temp = bmp_temp + 1.1
-    bmp_pressure = pressure_from_altitude(altitude, BMP_SEA_LEVEL_PRESSURE)
-    bme_pressure = bmp_pressure + 0.9
+    bme_temp = 22.2 - temp_drop + math.sin(sample_id / 5.0) * 0.4
+    tmp36_temp = bme_temp + 0.4
+    bme_pressure = pressure_from_altitude(altitude, BME_SEA_LEVEL_PRESSURE)
     humidity = max(34.0, 61.0 - altitude / 35.0 + math.sin(sample_id / 4.0) * 1.6)
     gas = 12800 + int(altitude * 3.4) + int(math.sin(sample_id / 2.5) * 280)
 
@@ -365,7 +361,7 @@ def build_packets(sample_id, altitude, problem=None):
         lon = 0
         gps_alt = 0
     elif problem == "sensor_spike":
-        bmp_temp += 8.0
+        bme_temp += 8.0
         tmp36_temp += 10.0
         az += 0.55
     elif problem == "radio_wobble":
@@ -373,16 +369,14 @@ def build_packets(sample_id, altitude, problem=None):
         gy -= 8.0
 
     return [
-        "E,{},{},{},{},{},{},{},{},{}".format(
+        "E,{},{},{},{},{},{},{}".format(
             sample_id,
             clock_text(sample_id),
-            scale_int(bmp_temp, 10),
-            scale_int(bmp_pressure, 10),
+            scale_int(tmp36_temp, 10),
             scale_int(bme_temp, 10),
             scale_int(bme_pressure, 10),
             scale_int(humidity, 10),
             scale_int(gas),
-            scale_int(tmp36_temp, 10),
         ),
         "M,{},A,{},{},{},{},{},{}".format(
             sample_id,
@@ -393,6 +387,7 @@ def build_packets(sample_id, altitude, problem=None):
             scale_int(gy, 100),
             scale_int(gz, 100),
         ),
+        "M,{},C,{},{},{}".format(sample_id, mx, my, mz),
         "G,{},{},{},{},{},{},{},{}".format(
             sample_id,
             gps_fix,
@@ -403,7 +398,6 @@ def build_packets(sample_id, altitude, problem=None):
             "2026-04-19" if gps_fix else "?",
             log_time(sample_id) if gps_fix else "?",
         ),
-        "M,{},C,{},{},{}".format(sample_id, mx, my, mz),
     ]
 
 

@@ -4,19 +4,19 @@ const CansatCharts = (() => {
       id: "temperature",
       title: "Temperature Sensors",
       unit: "C",
-      series: [["bmp_temp", "BMP temp", "#ff6b6b"], ["bme_temp", "BME temp", "#6db6ff"], ["tmp36_temp", "TMP36 temp", "#f6d36d"]]
+      series: [["tmp36_temp", "TMP36 temp", "#f6d36d"], ["bme_temp", "BME temp", "#6db6ff"]]
     },
     {
       id: "pressure",
       title: "Pressure",
       unit: "hPa",
-      series: [["bmp_pressure", "BMP pressure", "#ffd166"], ["bme_pressure", "BME pressure", "#80d27e"]]
+      series: [["bme_pressure", "BME pressure", "#80d27e"]]
     },
     {
       id: "altitude",
       title: "Altitude",
       unit: "m",
-      series: [["bmp_altitude", "BMP altitude", "#ff6b6b"], ["bme_altitude", "BME altitude", "#6db6ff"], ["gps_altitude", "GPS altitude", "#c69cff"]]
+      series: [["bme_altitude", "BME altitude", "#6db6ff"], ["gps_altitude", "GPS altitude", "#c69cff"]]
     },
     {
       id: "air",

@@ -46,7 +46,6 @@ RFM_BITRATE = 4800
 RFM_TX_POWER_DBM = 13
 
 # Calculations
-BMP_SEA_LEVEL_PRESSURE = 1013.25
 BME_SEA_LEVEL_PRESSURE = 1013.25
 
 # Main loop
@@ -193,18 +192,23 @@ def parse_packet(packet):
     packet_type = parts[0]
     sample_id = parts[1]
 
-    if packet_type == "E" and len(parts) >= 9:
+    if packet_type == "E" and len(parts) >= 8:
+        if len(parts) >= 10:
+            bme_offset = 5
+            tmp36_index = 9
+        else:
+            tmp36_index = 3
+            bme_offset = 4
+
         return {
             "type": "E",
             "id": sample_id,
             "rtc": parts[2],
-            "bmp_t": unscale(parts[3], 10),
-            "bmp_p": unscale(parts[4], 10),
-            "bme_t": unscale(parts[5], 10),
-            "bme_p": unscale(parts[6], 10),
-            "bme_h": unscale(parts[7], 10),
-            "bme_g": safe_int(parts[8]),
-            "tmp36_t": unscale(parts[9], 10) if len(parts) >= 10 else None,
+            "bme_t": unscale(parts[bme_offset], 10),
+            "bme_p": unscale(parts[bme_offset + 1], 10),
+            "bme_h": unscale(parts[bme_offset + 2], 10),
+            "bme_g": safe_int(parts[bme_offset + 3]),
+            "tmp36_t": unscale(parts[tmp36_index], 10) if len(parts) > tmp36_index else None,
         }
 
     if packet_type == "M" and len(parts) >= 4:
@@ -257,7 +261,6 @@ def apply_packet(sample_cache, parsed):
 
 def readable_line(sample):
     rtc = sample.get("rtc") or "RTCERR"
-    bmp_p = sample.get("bmp_p")
     bme_p = sample.get("bme_p")
     ax = sample.get("ax")
     ay = sample.get("ay")
@@ -265,23 +268,19 @@ def readable_line(sample):
     mx = sample.get("mx")
     my = sample.get("my")
 
-    bmp_alt = altitude_from_pressure(bmp_p, BMP_SEA_LEVEL_PRESSURE)
     bme_alt = altitude_from_pressure(bme_p, BME_SEA_LEVEL_PRESSURE)
     pitch, roll = pitch_roll_from_accel(ax, ay, az)
     heading = heading_from_mag(mx, my)
 
     return (
-        "T={} BMP[T={} P={} A={}] "
+        "T={} TMP36[T={}] "
         "BME[T={} P={} H={} G={}ohm A={}] "
         "MPU[Ax={} Ay={} Az={} Gx={} Gy={} Gz={} Pit={} Rol={}] "
-        "TMP36[T={}] "
         "MAG[X={} Y={} Z={} H={}] "
         "GPS[FIX={} SAT={} LAT={} LON={} ALT={}]"
     ).format(
         rtc,
-        fmt_value(sample.get("bmp_t"), 1, "C"),
-        fmt_value(bmp_p, 1, "hPa"),
-        fmt_value(bmp_alt, 1, "m"),
+        fmt_value(sample.get("tmp36_t"), 1, "C"),
         fmt_value(sample.get("bme_t"), 1, "C"),
         fmt_value(bme_p, 1, "hPa"),
         fmt_value(sample.get("bme_h"), 1, "%"),
@@ -295,7 +294,6 @@ def readable_line(sample):
         fmt_value(sample.get("gz"), 2, "dps"),
         fmt_value(pitch, 1, "deg"),
         fmt_value(roll, 1, "deg"),
-        fmt_value(sample.get("tmp36_t"), 1, "C"),
         fmt_value(mx),
         fmt_value(my),
         fmt_value(sample.get("mz")),
