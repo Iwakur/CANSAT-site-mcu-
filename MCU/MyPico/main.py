@@ -57,21 +57,19 @@ SD_MISO_PIN = 4
 SD_CS_PIN = 5
 SD_BAUDRATE = 500000
 
-# LED module
-LED_PIN = 15
-LED_COUNT = 4
+# LED modules
+MISSION_LED_PIN = 9
+MODULE_LED_PIN = 10
+MODULE_LED_COUNT = 8
 
-# LED cycle 1
-LED_RTC = 0
-LED_TMP36 = 1
-LED_BME = 2
-LED_MPU = 3
-
-# LED cycle 2
-LED_SD = 0
-LED_GPS = 1
-LED_RFM = 2
-LED_MAG = 3
+MODULE_RTC = 0
+MODULE_TMP36 = 1
+MODULE_BME = 2
+MODULE_MPU = 3
+MODULE_MAG = 4
+MODULE_GPS = 5
+MODULE_SD = 6
+MODULE_RFM = 7
 
 # RFM69
 RFM_SCK_PIN = SD_SCK_PIN
@@ -88,26 +86,13 @@ RFM_TX_POWER_DBM = 13
 RFM_MAX_PAYLOAD_BYTES = 60
 RFM_LOG_EVERY_SEND = False
 DEBUG_TELEMETRY = True
-DEBUG_TELEMETRY_EVERY_SAMPLES = 10
-RFM_STATUS_EVERY_SAMPLES = 10
+DEBUG_TELEMETRY_EVERY_SAMPLES = 1
+RFM_STATUS_EVERY_SAMPLES = 1
 
 # Main loop
-LOOP_DELAY_MS = 200
+LOOP_PERIOD_MS = 1000
 SENSOR_RECONNECT_INTERVAL_MS = 30000
 RFM_RECONNECT_INTERVAL_MS = 10000
-
-# =========================
-# LED TIMINGS
-# =========================
-LED_INIT_CHECK_MS = 20
-LED_INIT_RESULT_MS = 40
-
-LED_CYCLE_CHECK_MS = 10
-LED_CYCLE_RESULT_MS = 20
-
-LED_BETWEEN_CYCLES_MS = 20
-LED_BLUE_BIP_MS = 15
-LED_DARK_BIP_MS = 10
 
 LED_MAIN_ERROR_RED_MS = 60
 
@@ -318,29 +303,6 @@ class CompatibleRFM69:
             }
 
 
-def configure_status_helpers():
-    configure_helpers(
-        RFM_MAX_PAYLOAD_BYTES,
-        leds,
-        LED_COUNT,
-        LED_RTC,
-        LED_TMP36,
-        LED_BME,
-        LED_MPU,
-        LED_SD,
-        LED_GPS,
-        LED_RFM,
-        LED_MAG,
-        LED_INIT_CHECK_MS,
-        LED_INIT_RESULT_MS,
-        LED_CYCLE_CHECK_MS,
-        LED_CYCLE_RESULT_MS,
-        LED_BETWEEN_CYCLES_MS,
-        LED_BLUE_BIP_MS,
-        LED_DARK_BIP_MS,
-    )
-
-
 def format_telemetry_line(ts, tmp_data, bme_data, mpu_data, mag_data, gps_data):
     return "T={} {} {} {} {} {}".format(
         ts,
@@ -379,50 +341,81 @@ def build_rfm_packets(sample_id, ts, tmp_data, bme_data, mpu_data, mag_data, gps
     ]
 
 
-def show_two_status_cycles(status_map):
-    show_led_status(LED_RTC, status_map["rtc"], LED_CYCLE_CHECK_MS, LED_CYCLE_RESULT_MS)
-    show_led_status(LED_TMP36, status_map["tmp36"], LED_CYCLE_CHECK_MS, LED_CYCLE_RESULT_MS)
-    show_led_status(LED_BME, status_map["bme"], LED_CYCLE_CHECK_MS, LED_CYCLE_RESULT_MS)
-    show_led_status(LED_MPU, status_map["mpu"], LED_CYCLE_CHECK_MS, LED_CYCLE_RESULT_MS)
-
-    blue_bip()
-    utime.sleep_ms(LED_BETWEEN_CYCLES_MS)
-
-    led_off(LED_MAG)
-    show_led_status(LED_SD, status_map["sd"], LED_CYCLE_CHECK_MS, LED_CYCLE_RESULT_MS)
-    show_gps_status(status_map["gps"], LED_CYCLE_CHECK_MS, LED_CYCLE_RESULT_MS)
-    show_led_status(LED_RFM, status_map["rfm"], LED_CYCLE_CHECK_MS, LED_CYCLE_RESULT_MS)
-    show_led_status(LED_MAG, status_map["mag"], LED_CYCLE_CHECK_MS, LED_CYCLE_RESULT_MS)
-
-    led_off(LED_MAG)
-    dark_bip()
+def bool_status_color(ok):
+    return module_leds.GREEN if ok else module_leds.RED
 
 
-def show_init_cycles(init_status_map):
-    show_init_module(LED_RTC, init_status_map["rtc"])
-    show_init_module(LED_TMP36, init_status_map["tmp36"])
-    show_init_module(LED_BME, init_status_map["bme"])
-    show_init_module(LED_MPU, init_status_map["mpu"])
+def gps_status_color(gps_state):
+    if gps_state == "fix":
+        return module_leds.GREEN
+    if gps_state == "connected":
+        return module_leds.BLUE
+    return module_leds.RED
 
-    blue_bip()
-    utime.sleep_ms(LED_BETWEEN_CYCLES_MS)
 
-    led_off(LED_MAG)
-    show_init_module(LED_SD, init_status_map["sd"])
-    show_gps_status(init_status_map["gps"], LED_INIT_CHECK_MS, LED_INIT_RESULT_MS)
-    show_init_module(LED_RFM, init_status_map["rfm"])
-    show_init_module(LED_MAG, init_status_map["mag"])
+def mission_health_level(status_map):
+    core_failures = 0
+    for key in ("tmp36", "bme", "mpu"):
+        if not status_map.get(key):
+            core_failures += 1
 
-    led_off(LED_MAG)
-    dark_bip()
+    if (
+        not status_map.get("rfm")
+        or not status_map.get("rtc")
+        or core_failures >= 2
+    ):
+        return "critical"
+
+    if (
+        core_failures == 1
+        or not status_map.get("sd")
+        or not status_map.get("mag")
+        or status_map.get("gps") != "fix"
+    ):
+        return "warning"
+
+    return "good"
+
+
+def update_module_leds(status_map):
+    module_leds._set(MODULE_RTC, bool_status_color(status_map["rtc"]))
+    module_leds._set(MODULE_TMP36, bool_status_color(status_map["tmp36"]))
+    module_leds._set(MODULE_BME, bool_status_color(status_map["bme"]))
+    module_leds._set(MODULE_MPU, bool_status_color(status_map["mpu"]))
+    module_leds._set(MODULE_MAG, bool_status_color(status_map["mag"]))
+    module_leds._set(MODULE_GPS, gps_status_color(status_map["gps"]))
+    module_leds._set(MODULE_SD, bool_status_color(status_map["sd"]))
+    module_leds._set(MODULE_RFM, bool_status_color(status_map["rfm"]))
+    module_leds.show()
+
+
+def update_mission_led(status_map, sample_id):
+    level = mission_health_level(status_map)
+
+    if level == "critical":
+        mission_led.value(1)
+    elif level == "warning":
+        mission_led.value(sample_id % 2)
+    else:
+        mission_led.value(1 if sample_id % 4 == 0 else 0)
+
+
+def update_status_leds(status_map, sample_id):
+    update_module_leds(status_map)
+    update_mission_led(status_map, sample_id)
 
 
 # =========================
 # INIT LEDS
 # =========================
-leds = StatusLEDs(pin_num=LED_PIN, count=LED_COUNT, brightness=20)
-configure_status_helpers()
-leds.startup_test()
+mission_led = Pin(MISSION_LED_PIN, Pin.OUT, value=0)
+module_leds = StatusLEDs(pin_num=MODULE_LED_PIN, count=MODULE_LED_COUNT, brightness=20)
+for _ in range(3):
+    mission_led.value(1)
+    utime.sleep_ms(80)
+    mission_led.value(0)
+    utime.sleep_ms(80)
+module_leds.startup_test()
 
 
 # =========================
@@ -655,7 +648,7 @@ init_status_map = {
     "gps": gps_led_state(gps_test),
     "rfm": rfm.ok,
 }
-show_init_cycles(init_status_map)
+update_status_leds(init_status_map, 0)
 
 
 # =========================
@@ -688,6 +681,8 @@ last_rfm_reconnect_ms = utime.ticks_ms()
 # MAIN LOOP
 # =========================
 while True:
+    loop_start_ms = utime.ticks_ms()
+
     try:
         # ---------- RTC ----------
         rtc_data = rtc.read()
@@ -879,7 +874,7 @@ while True:
 
         rfm_was_ok = current_rfm_ok
 
-        # ---------- LED STATUS CYCLES ----------
+        # ---------- LED STATUS ----------
         status_map = {
             "rtc": rtc_data["ok"],
             "tmp36": tmp36_data["ok"],
@@ -895,12 +890,17 @@ while True:
             or sample_id % DEBUG_TELEMETRY_EVERY_SAMPLES == 0
         ):
             print(telemetry_line)
-        show_two_status_cycles(status_map)
+        update_status_leds(status_map, sample_id)
         sample_id = (sample_id + 1) % 10000
 
     except Exception as e:
         print("MAIN LOOP ERROR:", e)
-        leds.blink_all(leds.RED, LED_MAIN_ERROR_RED_MS)
+        mission_led.value(1)
+        utime.sleep_ms(LED_MAIN_ERROR_RED_MS)
+        mission_led.value(0)
         sdmod.write_log(log_line("RTC_ERR", "ERROR", "MAIN", str(e)))
 
-    utime.sleep_ms(LOOP_DELAY_MS)
+    elapsed_ms = utime.ticks_diff(utime.ticks_ms(), loop_start_ms)
+    sleep_ms = LOOP_PERIOD_MS - elapsed_ms
+    if sleep_ms > 0:
+        utime.sleep_ms(sleep_ms)
