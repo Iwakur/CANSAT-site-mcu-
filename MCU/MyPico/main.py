@@ -354,27 +354,25 @@ def gps_status_color(gps_state):
 
 
 def mission_health_level(status_map):
-    core_failures = 0
-    for key in ("tmp36", "bme", "mpu"):
-        if not status_map.get(key):
-            core_failures += 1
+    module_failures = 0
 
-    if (
-        not status_map.get("rfm")
-        or not status_map.get("rtc")
-        or core_failures >= 2
-    ):
+    for key in ("rtc", "tmp36", "bme", "mpu", "mag", "sd", "rfm"):
+        if not status_map.get(key):
+            module_failures += 1
+
+    if status_map.get("gps") != "fix":
+        module_failures += 1
+
+    if module_failures >= 3:
         return "critical"
 
-    if (
-        core_failures == 1
-        or not status_map.get("sd")
-        or not status_map.get("mag")
-        or status_map.get("gps") != "fix"
-    ):
+    if not status_map.get("rfm"):
         return "warning"
 
-    return "good"
+    if module_failures == 0:
+        return "good"
+
+    return "warning"
 
 
 def update_module_leds(status_map):
@@ -391,13 +389,17 @@ def update_module_leds(status_map):
 
 def update_mission_led(status_map, sample_id):
     level = mission_health_level(status_map)
+    pulse_on = (sample_id % 2) == 0
 
     if level == "critical":
-        mission_led.value(1)
+        color = mission_led.RED
     elif level == "warning":
-        mission_led.value(sample_id % 2)
+        color = mission_led.ORANGE
     else:
-        mission_led.value(1 if sample_id % 4 == 0 else 0)
+        color = mission_led.GREEN
+
+    mission_led._set(0, color if pulse_on else mission_led.OFF)
+    mission_led.show()
 
 
 def update_status_leds(status_map, sample_id):
@@ -408,12 +410,14 @@ def update_status_leds(status_map, sample_id):
 # =========================
 # INIT LEDS
 # =========================
-mission_led = Pin(MISSION_LED_PIN, Pin.OUT, value=0)
+mission_led = StatusLEDs(pin_num=MISSION_LED_PIN, count=1, brightness=20)
 module_leds = StatusLEDs(pin_num=MODULE_LED_PIN, count=MODULE_LED_COUNT, brightness=20)
 for _ in range(3):
-    mission_led.value(1)
+    mission_led._set(0, mission_led.BLUE)
+    mission_led.show()
     utime.sleep_ms(80)
-    mission_led.value(0)
+    mission_led._set(0, mission_led.OFF)
+    mission_led.show()
     utime.sleep_ms(80)
 module_leds.startup_test()
 
@@ -895,9 +899,11 @@ while True:
 
     except Exception as e:
         print("MAIN LOOP ERROR:", e)
-        mission_led.value(1)
+        mission_led._set(0, mission_led.RED)
+        mission_led.show()
         utime.sleep_ms(LED_MAIN_ERROR_RED_MS)
-        mission_led.value(0)
+        mission_led._set(0, mission_led.OFF)
+        mission_led.show()
         sdmod.write_log(log_line("RTC_ERR", "ERROR", "MAIN", str(e)))
 
     elapsed_ms = utime.ticks_diff(utime.ticks_ms(), loop_start_ms)
