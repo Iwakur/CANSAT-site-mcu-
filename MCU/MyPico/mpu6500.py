@@ -66,7 +66,7 @@ class MPU6500:
     # -------------------------
     # CALIBRATION
     # -------------------------
-    def calibrate(self, samples=300):
+    def calibrate(self, samples=300, progress=None):
         gx_off = gy_off = gz_off = 0
         ax_off = ay_off = az_off = 0
 
@@ -88,6 +88,8 @@ class MPU6500:
                 az_off += (az - 16384)  # remove 1g from Z axis
 
                 good += 1
+                if progress is not None and (good == 1 or good == samples or good % 10 == 0):
+                    progress(good, samples)
                 time.sleep_ms(5)
 
             except OSError:

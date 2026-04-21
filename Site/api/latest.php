@@ -17,12 +17,13 @@ try {
     }
 
     $columns = implode(', ', [
-        'id', 'dataset_id', 'received_at', 'line_number', 'raw_line', 'device_time',
+        'id', 'dataset_id', 'received_at', 'line_number', 'raw_line', 'mcu_sample_id', 'device_time',
         'tmp36_temp', 'tmp36_voltage', 'tmp36_raw',
-        'bme_temp', 'bme_pressure', 'bme_humidity', 'bme_gas', 'bme_altitude',
+        'bme_temp', 'bme_pressure', 'bme_humidity', 'bme_gas', 'bme_gas_valid', 'bme_altitude',
         'ax', 'ay', 'az', 'gx', 'gy', 'gz', 'pitch', 'roll',
         'mag_x', 'mag_y', 'mag_z', 'heading',
         'gps_fix', 'gps_satellites', 'gps_lat', 'gps_lon', 'gps_altitude',
+        'gps_hdop', 'gps_speed_kmh', 'gps_course_deg', 'gps_vertical_speed_ms',
         'parse_ok', 'parse_message',
     ]);
 

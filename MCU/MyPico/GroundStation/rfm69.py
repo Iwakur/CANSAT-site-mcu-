@@ -128,9 +128,9 @@ class RFM69:
         if self.rst is None:
             return
         self.rst.value(1)
-        utime.sleep_ms(1)
+        utime.sleep_ms(10)
         self.rst.value(0)
-        utime.sleep_ms(20)
+        utime.sleep_ms(50)
 
     def _clear_fifo(self):
         self._set_mode(self.MODE_STDBY)

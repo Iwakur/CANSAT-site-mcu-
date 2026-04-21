@@ -314,7 +314,6 @@ class SDCardLogger:
     def _append_line(self, path, line):
         with open(path, "a") as f:
             f.write(line + "\n")
-            f.flush()
 
     def write_data(self, line):
         try:

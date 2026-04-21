@@ -5,6 +5,7 @@ function telemetry_blank_record(string $line): array
 {
     return [
         'raw_line' => $line,
+        'mcu_sample_id' => null,
         'device_time' => null,
         'tmp36_temp' => null,
         'tmp36_voltage' => null,
@@ -13,6 +14,7 @@ function telemetry_blank_record(string $line): array
         'bme_pressure' => null,
         'bme_humidity' => null,
         'bme_gas' => null,
+        'bme_gas_valid' => null,
         'bme_altitude' => null,
         'ax' => null,
         'ay' => null,
@@ -31,6 +33,10 @@ function telemetry_blank_record(string $line): array
         'gps_lat' => null,
         'gps_lon' => null,
         'gps_altitude' => null,
+        'gps_hdop' => null,
+        'gps_speed_kmh' => null,
+        'gps_course_deg' => null,
+        'gps_vertical_speed_ms' => null,
         'parse_ok' => false,
         'parse_message' => 'No telemetry fields found.',
     ];
@@ -73,6 +79,23 @@ function telemetry_int(?string $value): ?int
     return $number === null ? null : (int) round($number);
 }
 
+function telemetry_bool_int(?string $value): ?int
+{
+    if ($value === null || $value === '' || $value === 'None') {
+        return null;
+    }
+
+    $value = strtolower($value);
+    if ($value === 'true' || $value === 'yes') {
+        return 1;
+    }
+    if ($value === 'false' || $value === 'no') {
+        return 0;
+    }
+
+    return telemetry_int($value);
+}
+
 function parse_telemetry_line(string $line): array
 {
     $line = trim(str_replace(["\r", "\n"], ' ', $line));
@@ -83,8 +106,12 @@ function parse_telemetry_line(string $line): array
         return $record;
     }
 
-    if (preg_match('/(?:^|\s)T=([^\s]+)/', $line, $match)) {
+    if (preg_match('/(?:^|\s)T=([0-9]{4}-[0-9]{2}-[0-9]{2}\s+[0-9]{2}:[0-9]{2}:[0-9]{2}|[^\s]+)/', $line, $match)) {
         $record['device_time'] = $match[1];
+    }
+
+    if (preg_match('/(?:^|\s)SID=(\d+)/', $line, $match)) {
+        $record['mcu_sample_id'] = (int) $match[1];
     }
 
     $tmp36 = telemetry_section($line, 'TMP36');
@@ -101,6 +128,7 @@ function parse_telemetry_line(string $line): array
     $record['bme_pressure'] = telemetry_number(telemetry_value($bme, 'P'));
     $record['bme_humidity'] = telemetry_number(telemetry_value($bme, 'H'));
     $record['bme_gas'] = telemetry_number(telemetry_value($bme, 'G'));
+    $record['bme_gas_valid'] = telemetry_bool_int(telemetry_value($bme, 'GV'));
     $record['bme_altitude'] = telemetry_number(telemetry_value($bme, 'A'));
 
     $record['ax'] = telemetry_number(telemetry_value($mpu, 'Ax'));
@@ -122,12 +150,16 @@ function parse_telemetry_line(string $line): array
     $record['gps_lat'] = telemetry_number(telemetry_value($gps, 'LAT'));
     $record['gps_lon'] = telemetry_number(telemetry_value($gps, 'LON'));
     $record['gps_altitude'] = telemetry_number(telemetry_value($gps, 'ALT'));
+    $record['gps_hdop'] = telemetry_number(telemetry_value($gps, 'HDOP'));
+    $record['gps_speed_kmh'] = telemetry_number(telemetry_value($gps, 'SPD'));
+    $record['gps_course_deg'] = telemetry_number(telemetry_value($gps, 'CRS'));
+    $record['gps_vertical_speed_ms'] = telemetry_number(telemetry_value($gps, 'VS'));
 
     $hasSection = $bme !== '' || $tmp36 !== '' || $mpu !== '' || $mag !== '' || $gps !== '';
     $hasValue = false;
 
     foreach ($record as $key => $value) {
-        if (!in_array($key, ['raw_line', 'device_time', 'parse_ok', 'parse_message'], true) && $value !== null) {
+        if (!in_array($key, ['raw_line', 'mcu_sample_id', 'device_time', 'parse_ok', 'parse_message'], true) && $value !== null) {
             $hasValue = true;
             break;
         }

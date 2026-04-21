@@ -34,7 +34,7 @@ BME_SEA_LEVEL_PRESSURE = 1013.25
 
 # MPU6500
 MPU_ADDRESS = 0x68
-MPU_DO_CALIBRATION = False
+MPU_DO_CALIBRATION = True
 MPU_CALIBRATION_SAMPLES = 300
 
 # TMP36 analog temperature sensor
@@ -58,8 +58,8 @@ SD_CS_PIN = 5
 SD_BAUDRATE = 500000
 
 # LED modules
-MISSION_LED_PIN = 9
-MODULE_LED_PIN = 10
+MISSION_LED_PIN = 10
+MODULE_LED_PIN = 9
 MODULE_LED_COUNT = 8
 
 MODULE_RTC = 0
@@ -76,7 +76,7 @@ RFM_SCK_PIN = SD_SCK_PIN
 RFM_MOSI_PIN = SD_MOSI_PIN
 RFM_MISO_PIN = SD_MISO_PIN
 RFM_CS_PIN = 6
-RFM_RST_PIN = None
+RFM_RST_PIN = 7
 RFM_SPI_ID = 0
 RFM_SPI_BAUDRATE = 50000
 RFM_FREQ_MHZ = 434.0
@@ -93,6 +93,16 @@ RFM_STATUS_EVERY_SAMPLES = 1
 LOOP_PERIOD_MS = 1000
 SENSOR_RECONNECT_INTERVAL_MS = 30000
 RFM_RECONNECT_INTERVAL_MS = 10000
+
+# Startup calibration / settling
+STARTUP_CALIBRATION_ENABLED = True
+STARTUP_STABLE_READS = 3
+STARTUP_RTC_STABLE_READS = 1
+STARTUP_MODULE_SETTLE_TIMEOUT_MS = 6000
+STARTUP_READ_INTERVAL_MS = 120
+STARTUP_GPS_TIME_SYNC_WAIT_MS = 15000
+STARTUP_GPS_POLL_MS = 250
+STARTUP_LED_ANIMATION_MS = 70
 
 LED_MAIN_ERROR_RED_MS = 60
 
@@ -303,9 +313,13 @@ class CompatibleRFM69:
             }
 
 
-def format_telemetry_line(ts, tmp_data, bme_data, mpu_data, mag_data, gps_data):
-    return "T={} {} {} {} {} {}".format(
-        ts,
+def format_telemetry_line(ts, tmp_data, bme_data, mpu_data, mag_data, gps_data, sample_id=None):
+    prefix = "T={}".format(ts)
+    if sample_id is not None:
+        prefix = "SID={} {}".format(sample_id, prefix)
+
+    return "{} {} {} {} {} {}".format(
+        prefix,
         format_tmp36_text(tmp_data),
         format_bme_text(bme_data),
         format_mpu_text(mpu_data),
@@ -314,31 +328,119 @@ def format_telemetry_line(ts, tmp_data, bme_data, mpu_data, mag_data, gps_data):
     )
 
 
-def build_env_packet(sample_id, ts, tmp_data, bme_data):
-    tmp_temp = tmp_data["temperature_c"] if tmp_data["ok"] else None
-    bme_temp = bme_data["temperature_c"] if bme_data["ok"] else None
-    bme_pressure = bme_data["pressure_hpa"] if bme_data["ok"] else None
-    bme_humidity = bme_data["humidity_pct"] if bme_data["ok"] else None
-    bme_gas = bme_data["gas_ohms"] if bme_data["ok"] else None
+def rfm_bool(data):
+    return 1 if data.get("ok") else 0
 
-    return "E,{},{},{},{},{},{},{}".format(
+
+def rfm_scale_int(value, factor=1):
+    if value is None:
+        return "x"
+    return scale_int(value, factor)
+
+
+def short_date(ts):
+    if ts == "RTC_ERR":
+        return "0"
+    return ts[:10].replace("-", "")
+
+
+def build_env_packet(sample_id, ts, tmp_data, bme_data):
+    return "E,{},{},{},{},{},{},{},{},{},{},{}".format(
         sample_id,
+        short_date(ts),
         short_time(ts),
-        scale_int(tmp_temp, 10),
-        scale_int(bme_temp, 10),
-        scale_int(bme_pressure, 10),
-        scale_int(bme_humidity, 10),
-        scale_int(bme_gas),
+        rfm_bool(tmp_data),
+        rfm_bool(bme_data),
+        rfm_scale_int(tmp_data["temperature_c"] if tmp_data["ok"] else None, 10),
+        rfm_scale_int(tmp_data["voltage_v"] if tmp_data["ok"] else None, 1000),
+        rfm_scale_int(tmp_data["raw"] if tmp_data["ok"] else None),
+        rfm_scale_int(bme_data["temperature_c"] if bme_data["ok"] else None, 10),
+        rfm_scale_int(bme_data["pressure_hpa"] if bme_data["ok"] else None, 10),
+        rfm_scale_int(bme_data["humidity_pct"] if bme_data["ok"] else None, 10),
     )
 
 
-def build_rfm_packets(sample_id, ts, tmp_data, bme_data, mpu_data, mag_data, gps_data):
+def build_bme_packet(sample_id, bme_data):
+    return "B,{},{},{},{},{}".format(
+        sample_id,
+        rfm_bool(bme_data),
+        rfm_scale_int(bme_data["gas_ohms"] if bme_data["ok"] else None),
+        rfm_scale_int(bme_data["altitude_m"] if bme_data["ok"] else None, 10),
+        1 if bme_data.get("gas_valid") else 0,
+    )
+
+
+def build_accel_packet(sample_id, mpu_data):
+    return "A,{},{},{},{},{},{},{},{}".format(
+        sample_id,
+        rfm_bool(mpu_data),
+        rfm_scale_int(mpu_data["ax"] if mpu_data["ok"] else None, 1000),
+        rfm_scale_int(mpu_data["ay"] if mpu_data["ok"] else None, 1000),
+        rfm_scale_int(mpu_data["az"] if mpu_data["ok"] else None, 1000),
+        rfm_scale_int(mpu_data["gx"] if mpu_data["ok"] else None, 100),
+        rfm_scale_int(mpu_data["gy"] if mpu_data["ok"] else None, 100),
+        rfm_scale_int(mpu_data["gz"] if mpu_data["ok"] else None, 100),
+    )
+
+
+def build_orientation_packet(sample_id, mpu_data):
+    return "O,{},{},{},{},{}".format(
+        sample_id,
+        rfm_bool(mpu_data),
+        rfm_scale_int(mpu_data["temp"] if mpu_data["ok"] else None, 10),
+        rfm_scale_int(mpu_data["pitch"] if mpu_data["ok"] else None, 10),
+        rfm_scale_int(mpu_data["roll"] if mpu_data["ok"] else None, 10),
+    )
+
+
+def build_mag_packet(sample_id, mag_data):
+    return "C,{},{},{},{},{},{},{}".format(
+        sample_id,
+        rfm_bool(mag_data),
+        rfm_scale_int(mag_data["x"] if mag_data["ok"] else None),
+        rfm_scale_int(mag_data["y"] if mag_data["ok"] else None),
+        rfm_scale_int(mag_data["z"] if mag_data["ok"] else None),
+        rfm_scale_int(mag_data["heading_deg"] if mag_data["ok"] else None, 10),
+        mag_data["chip"] if mag_data["ok"] else "0",
+    )
+
+
+def build_gps_packet(sample_id, gps_data):
+    return "G,{},{},{},{},{},{},{},{},{},{},{}".format(
+        sample_id,
+        rfm_bool(gps_data),
+        int(gps_data["fix"]) if gps_data["ok"] else 0,
+        rfm_scale_int(gps_data["satellites"] if gps_data["ok"] else None),
+        rfm_scale_int(gps_data["latitude"] if gps_data["ok"] else None, 1000000),
+        rfm_scale_int(gps_data["longitude"] if gps_data["ok"] else None, 1000000),
+        rfm_scale_int(gps_data["absolute_altitude_m"] if gps_data["ok"] else None, 10),
+        rfm_scale_int(gps_data.get("hdop") if gps_data["ok"] else None, 100),
+        rfm_scale_int(gps_data.get("speed_kmh") if gps_data["ok"] else None, 10),
+        rfm_scale_int(gps_data.get("course_deg") if gps_data["ok"] else None, 10),
+        rfm_scale_int(gps_data.get("vertical_speed_ms") if gps_data["ok"] else None, 100),
+    )
+
+
+def build_rfm_packets(sample_id, telemetry_line, ts, tmp_data, bme_data, mpu_data, mag_data, gps_data):
     return [
         build_env_packet(sample_id, ts, tmp_data, bme_data),
-        build_motion_packet(sample_id, mpu_data),
+        build_bme_packet(sample_id, bme_data),
+        build_accel_packet(sample_id, mpu_data),
+        build_orientation_packet(sample_id, mpu_data),
         build_mag_packet(sample_id, mag_data),
         build_gps_packet(sample_id, gps_data),
     ]
+
+
+def format_legacy_telemetry_line(ts, tmp_data, bme_data, mpu_data, mag_data, gps_data):
+    return "T={} {} {} {} {} {}".format(
+        ts,
+        format_tmp36_text(tmp_data),
+        format_bme_text(bme_data),
+        format_mpu_text(mpu_data),
+        format_mag_text(mag_data),
+        format_gps_text(gps_data)
+    )
 
 
 def bool_status_color(ok):
@@ -407,6 +509,200 @@ def update_status_leds(status_map, sample_id):
     update_mission_led(status_map, sample_id)
 
 
+def calibration_log(message):
+    line = "CALIBRATION {}".format(message)
+    print(line)
+    try:
+        if "sdmod" in globals() and sdmod is not None and sdmod.ok:
+            sdmod.write_log(log_line(now_text(rtc.read()), "INFO", "CALIBRATION", message))
+    except Exception:
+        pass
+
+
+def calibration_leds(active_index=None, done=None, failed=None, tick=0):
+    if done is None:
+        done = {}
+    if failed is None:
+        failed = {}
+
+    for index in range(MODULE_LED_COUNT):
+        module_leds._set(index, module_leds.OFF)
+
+    for index in done:
+        module_leds._set(index, module_leds.GREEN)
+
+    for index in failed:
+        module_leds._set(index, module_leds.RED)
+
+    if active_index is not None:
+        module_leds._set(
+            active_index,
+            module_leds.YELLOW if (tick % 2) == 0 else module_leds.BLUE
+        )
+
+    module_leds.show()
+
+
+def wait_for_stable_module(label, module, module_index, error_result, done, failed, stable_reads):
+    calibration_log("{} SETTLING".format(label))
+    start = utime.ticks_ms()
+    consecutive_ok = 0
+    last_data = error_result("startup calibration did not run")
+    tick = 0
+
+    while utime.ticks_diff(utime.ticks_ms(), start) < STARTUP_MODULE_SETTLE_TIMEOUT_MS:
+        calibration_leds(module_index, done, failed, tick)
+        last_data = module.read()
+
+        if last_data["ok"]:
+            consecutive_ok += 1
+            if consecutive_ok >= stable_reads:
+                done[module_index] = True
+                calibration_leds(None, done, failed, tick)
+                calibration_log("{} READY".format(label))
+                return last_data
+        else:
+            consecutive_ok = 0
+
+        tick += 1
+        utime.sleep_ms(STARTUP_READ_INTERVAL_MS)
+
+    failed[module_index] = True
+    calibration_leds(None, done, failed, tick)
+    calibration_log("{} NOT_READY {}".format(label, last_data.get("error", "unknown")))
+    return last_data
+
+
+def calibrate_mpu_startup(done, failed):
+    if not MPU_DO_CALIBRATION or not mpu.ok:
+        return
+
+    calibration_log("MPU6500 OFFSET_CALIBRATION keep board still")
+
+    def progress(good, total):
+        tick = good // 10
+        calibration_leds(MODULE_MPU, done, failed, tick)
+
+    try:
+        mpu.calibrate(samples=MPU_CALIBRATION_SAMPLES, progress=progress)
+        calibration_log("MPU6500 OFFSET_CALIBRATION_DONE")
+    except Exception as e:
+        mpu.ok = False
+        mpu.last_error = str(e)
+        failed[MODULE_MPU] = True
+        calibration_leds(None, done, failed, 0)
+        calibration_log("MPU6500 OFFSET_CALIBRATION_FAILED {}".format(mpu.last_error))
+
+
+def wait_for_gps_time_sync(done, failed):
+    calibration_log("GPS TIME_SYNC_WAIT")
+    start = utime.ticks_ms()
+    tick = 0
+    last_data = gps_test
+
+    while utime.ticks_diff(utime.ticks_ms(), start) < STARTUP_GPS_TIME_SYNC_WAIT_MS:
+        calibration_leds(MODULE_GPS, done, failed, tick)
+        last_data = gps.read()
+
+        if last_data["ok"] and last_data["rtc_update_ready"]:
+            if sync_rtc_from_gps(rtc, last_data):
+                last_data["rtc_synced"] = True
+                done[MODULE_GPS] = True
+                calibration_leds(None, done, failed, tick)
+                calibration_log("GPS RTC_SYNCED")
+                return last_data
+
+        tick += 1
+        utime.sleep_ms(STARTUP_GPS_POLL_MS)
+
+    if last_data["ok"] and last_data["connected"]:
+        done[MODULE_GPS] = True
+        calibration_log("GPS CONNECTED_NO_TIME continuing without fix")
+    else:
+        failed[MODULE_GPS] = True
+        calibration_log("GPS NO_TIME {}".format(last_data.get("error", "no time")))
+
+    calibration_leds(None, done, failed, tick)
+    last_data["rtc_synced"] = False
+    return last_data
+
+
+def run_startup_calibration():
+    if not STARTUP_CALIBRATION_ENABLED:
+        return rtc_test, tmp36_test, bme_test, mpu_test, mag_test, gps_test
+
+    calibration_log("START")
+    done = {}
+    failed = {}
+
+    rtc_ready = wait_for_stable_module(
+        "RTC",
+        rtc,
+        MODULE_RTC,
+        error_result_rtc,
+        done,
+        failed,
+        STARTUP_RTC_STABLE_READS
+    )
+    tmp36_ready = wait_for_stable_module(
+        "TMP36",
+        tmp36,
+        MODULE_TMP36,
+        error_result_tmp36,
+        done,
+        failed,
+        STARTUP_STABLE_READS
+    )
+    bme_ready = wait_for_stable_module(
+        "BME688",
+        bme,
+        MODULE_BME,
+        error_result_bme,
+        done,
+        failed,
+        STARTUP_STABLE_READS
+    )
+
+    calibrate_mpu_startup(done, failed)
+    mpu_ready = wait_for_stable_module(
+        "MPU6500",
+        mpu,
+        MODULE_MPU,
+        error_result_mpu,
+        done,
+        failed,
+        STARTUP_STABLE_READS
+    )
+    mag_ready = wait_for_stable_module(
+        "MAG",
+        mag,
+        MODULE_MAG,
+        error_result_mag,
+        done,
+        failed,
+        STARTUP_STABLE_READS
+    )
+
+    gps_ready = wait_for_gps_time_sync(done, failed)
+
+    if sdmod.ok:
+        done[MODULE_SD] = True
+    else:
+        failed[MODULE_SD] = True
+
+    if rfm.ok:
+        done[MODULE_RFM] = True
+    else:
+        failed[MODULE_RFM] = True
+
+    calibration_leds(None, done, failed, 0)
+    utime.sleep_ms(250)
+    calibration_log("DONE")
+
+    rtc_after = rtc.read()
+    return rtc_after, tmp36_ready, bme_ready, mpu_ready, mag_ready, gps_ready
+
+
 # =========================
 # INIT LEDS
 # =========================
@@ -448,7 +744,7 @@ rtc = StartupModule(
     error_result_rtc
 )
 rtc_test = rtc.read()
-rtc.set_datetime(2026, 4, 19, 7, 18, 25, 40)
+rtc.set_datetime(2000, 1, 1, 6, 0, 0, 0)
 print("RTC INIT:", rtc_test)
 
 
@@ -500,16 +796,6 @@ mpu = StartupModule(
     ),
     error_result_mpu
 )
-
-if MPU_DO_CALIBRATION and mpu.ok:
-    try:
-        print("MPU6500 CALIBRATION: keep the board still")
-        mpu.calibrate(samples=MPU_CALIBRATION_SAMPLES)
-        print("MPU6500 CALIBRATION DONE")
-    except Exception as e:
-        mpu.ok = False
-        mpu.last_error = str(e)
-        print("MPU6500 CALIBRATION ERROR:", mpu.last_error)
 
 mpu_test = mpu.read()
 print("MPU INIT:", mpu_test)
@@ -607,11 +893,12 @@ if rfm.ok:
 else:
     print("RFM69 NOT READY:", rfm.last_error)
 
-print("CANSAT RFM CONFIG: SCK=GP{} MOSI=GP{} MISO=GP{} CS=GP{} FREQ={}MHz BITRATE={} FDEV={} TX_POWER={}dBm".format(
+print("CANSAT RFM CONFIG: SCK=GP{} MOSI=GP{} MISO=GP{} CS=GP{} RST=GP{} FREQ={}MHz BITRATE={} FDEV={} TX_POWER={}dBm".format(
     RFM_SCK_PIN,
     RFM_MOSI_PIN,
     RFM_MISO_PIN,
     RFM_CS_PIN,
+    RFM_RST_PIN,
     RFM_FREQ_MHZ,
     RFM_BITRATE,
     RFM_FREQ_DEVIATION,
@@ -622,11 +909,12 @@ sdmod.write_log(log_line(
     now_text(rtc_test),
     "INFO",
     "RFM69",
-    "CONFIG SCK=GP{} MOSI=GP{} MISO=GP{} CS=GP{} FREQ={}MHz BITRATE={} FDEV={} TX_POWER={}dBm".format(
+    "CONFIG SCK=GP{} MOSI=GP{} MISO=GP{} CS=GP{} RST=GP{} FREQ={}MHz BITRATE={} FDEV={} TX_POWER={}dBm".format(
         RFM_SCK_PIN,
         RFM_MOSI_PIN,
         RFM_MISO_PIN,
         RFM_CS_PIN,
+        RFM_RST_PIN,
         RFM_FREQ_MHZ,
         RFM_BITRATE,
         RFM_FREQ_DEVIATION,
@@ -637,6 +925,12 @@ sdmod.write_log(log_line(
 rfm_debug = rfm_debug_line(now_text(rtc_test), rfm.debug_status())
 print(rfm_debug)
 sdmod.write_log(rfm_debug)
+
+
+# =========================
+# STARTUP CALIBRATION / SETTLING
+# =========================
+rtc_test, tmp36_test, bme_test, mpu_test, mag_test, gps_test = run_startup_calibration()
 
 
 # =========================
@@ -668,7 +962,7 @@ gps_had_fix = gps_test["fix"] if gps_test["ok"] else False
 sd_was_ok = sdmod.ok
 rfm_was_ok = rfm.ok
 sample_id = 0
-gps_time_synced_for_connection = False
+gps_time_synced_for_connection = gps_test.get("rtc_synced", False)
 gps_packet_sent_for_connection = False
 gps_fix_packet_sent_for_connection = False
 
@@ -800,7 +1094,7 @@ while True:
                 sdmod.write_log(log_line(ts, "WARN", "GPS", "RTC_SYNC_FAILED"))
 
         # ---------- FORMAT OUTPUTS ----------
-        telemetry_line = format_telemetry_line(ts, tmp36_data, bme_data, mpu_data, mag_data, gps_data)
+        telemetry_line = format_telemetry_line(ts, tmp36_data, bme_data, mpu_data, mag_data, gps_data, sample_id)
 
         if gps_data["ok"] and gps_data["connected"] and not gps_packet_sent_for_connection:
             gps_packet_sent_for_connection = True
@@ -808,15 +1102,7 @@ while True:
         if gps_data["ok"] and gps_data["fix"] and not gps_fix_packet_sent_for_connection:
             gps_fix_packet_sent_for_connection = True
 
-        rfm_packets = build_rfm_packets(
-            sample_id,
-            ts,
-            tmp36_data,
-            bme_data,
-            mpu_data,
-            mag_data,
-            gps_data
-        )
+        rfm_packets = build_rfm_packets(sample_id, telemetry_line, ts, tmp36_data, bme_data, mpu_data, mag_data, gps_data)
 
         # ---------- SD WRITE / HEALTH ----------
         current_sd_ok = sd_was_ok
@@ -895,7 +1181,7 @@ while True:
         ):
             print(telemetry_line)
         update_status_leds(status_map, sample_id)
-        sample_id = (sample_id + 1) % 10000
+        sample_id = (sample_id + 1) % 1000000
 
     except Exception as e:
         print("MAIN LOOP ERROR:", e)

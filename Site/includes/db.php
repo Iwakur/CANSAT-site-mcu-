@@ -76,6 +76,7 @@ function ensure_schema(PDO $pdo): void
             received_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
             line_number INT UNSIGNED NULL,
             raw_line TEXT NOT NULL,
+            mcu_sample_id INT UNSIGNED NULL,
             device_time VARCHAR(64) NULL,
             tmp36_temp DOUBLE NULL,
             tmp36_voltage DOUBLE NULL,
@@ -84,6 +85,7 @@ function ensure_schema(PDO $pdo): void
             bme_pressure DOUBLE NULL,
             bme_humidity DOUBLE NULL,
             bme_gas DOUBLE NULL,
+            bme_gas_valid TINYINT NULL,
             bme_altitude DOUBLE NULL,
             ax DOUBLE NULL,
             ay DOUBLE NULL,
@@ -102,6 +104,10 @@ function ensure_schema(PDO $pdo): void
             gps_lat DOUBLE NULL,
             gps_lon DOUBLE NULL,
             gps_altitude DOUBLE NULL,
+            gps_hdop DOUBLE NULL,
+            gps_speed_kmh DOUBLE NULL,
+            gps_course_deg DOUBLE NULL,
+            gps_vertical_speed_ms DOUBLE NULL,
             parse_ok TINYINT(1) NOT NULL DEFAULT 0,
             parse_message VARCHAR(255) NULL,
             CONSTRAINT fk_telemetry_dataset
@@ -114,8 +120,14 @@ function ensure_schema(PDO $pdo): void
     );
 
     ensure_telemetry_column($pdo, 'tmp36_temp', 'DOUBLE NULL');
+    ensure_telemetry_column($pdo, 'mcu_sample_id', 'INT UNSIGNED NULL');
     ensure_telemetry_column($pdo, 'tmp36_voltage', 'DOUBLE NULL');
     ensure_telemetry_column($pdo, 'tmp36_raw', 'INT NULL');
+    ensure_telemetry_column($pdo, 'bme_gas_valid', 'TINYINT NULL');
+    ensure_telemetry_column($pdo, 'gps_hdop', 'DOUBLE NULL');
+    ensure_telemetry_column($pdo, 'gps_speed_kmh', 'DOUBLE NULL');
+    ensure_telemetry_column($pdo, 'gps_course_deg', 'DOUBLE NULL');
+    ensure_telemetry_column($pdo, 'gps_vertical_speed_ms', 'DOUBLE NULL');
 
     $pdo->exec(
         "CREATE TABLE IF NOT EXISTS logs (
@@ -169,12 +181,13 @@ function insert_log(PDO $pdo, string $rawLine, string $source = 'ground'): void
 function insert_telemetry(PDO $pdo, int $datasetId, array $record, ?int $lineNumber = null): void
 {
     $columns = [
-        'dataset_id', 'line_number', 'raw_line', 'device_time',
+        'dataset_id', 'line_number', 'raw_line', 'mcu_sample_id', 'device_time',
         'tmp36_temp', 'tmp36_voltage', 'tmp36_raw',
-        'bme_temp', 'bme_pressure', 'bme_humidity', 'bme_gas', 'bme_altitude',
+        'bme_temp', 'bme_pressure', 'bme_humidity', 'bme_gas', 'bme_gas_valid', 'bme_altitude',
         'ax', 'ay', 'az', 'gx', 'gy', 'gz', 'pitch', 'roll',
         'mag_x', 'mag_y', 'mag_z', 'heading',
         'gps_fix', 'gps_satellites', 'gps_lat', 'gps_lon', 'gps_altitude',
+        'gps_hdop', 'gps_speed_kmh', 'gps_course_deg', 'gps_vertical_speed_ms',
         'parse_ok', 'parse_message',
     ];
 
@@ -182,6 +195,7 @@ function insert_telemetry(PDO $pdo, int $datasetId, array $record, ?int $lineNum
         $datasetId,
         $lineNumber,
         $record['raw_line'],
+        $record['mcu_sample_id'],
         $record['device_time'],
         $record['tmp36_temp'],
         $record['tmp36_voltage'],
@@ -190,6 +204,7 @@ function insert_telemetry(PDO $pdo, int $datasetId, array $record, ?int $lineNum
         $record['bme_pressure'],
         $record['bme_humidity'],
         $record['bme_gas'],
+        $record['bme_gas_valid'],
         $record['bme_altitude'],
         $record['ax'],
         $record['ay'],
@@ -208,6 +223,10 @@ function insert_telemetry(PDO $pdo, int $datasetId, array $record, ?int $lineNum
         $record['gps_lat'],
         $record['gps_lon'],
         $record['gps_altitude'],
+        $record['gps_hdop'],
+        $record['gps_speed_kmh'],
+        $record['gps_course_deg'],
+        $record['gps_vertical_speed_ms'],
         $record['parse_ok'] ? 1 : 0,
         $record['parse_message'],
     ];

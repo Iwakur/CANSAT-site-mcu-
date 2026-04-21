@@ -1,6 +1,7 @@
 import utime
 
 RFM_MAX_PAYLOAD_BYTES = 60
+RFM_LINE_CHUNK_BYTES = 45
 LED_COUNT = 4
 LED_RTC = 0
 LED_TMP36 = 1
@@ -352,6 +353,12 @@ def short_time(ts):
     return ts[-8:].replace(":", "")
 
 
+def short_date(ts):
+    if ts == "RTC_ERR":
+        return "0"
+    return ts[:10].replace("-", "")
+
+
 def weekday_from_date(year, month, day):
     # Sakamoto algorithm: returns DS1302 weekday 1..7, Monday=1.
     offsets = (0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4)
@@ -431,12 +438,13 @@ def retry_due(last_ms, interval_ms):
 def format_bme_text(bme_data):
     if not bme_data["ok"]:
         return "BME[ERR]"
-    return "BME[T={} P={} H={} G={}ohm A={}]".format(
+    return "BME[T={} P={} H={} G={}ohm A={} GV={}]".format(
         fmt_value(bme_data["temperature_c"], 1, "C"),
         fmt_value(bme_data["pressure_hpa"], 1, "hPa"),
         fmt_value(bme_data["humidity_pct"], 1, "%"),
         fmt_value(bme_data["gas_ohms"]),
-        fmt_value(bme_data["altitude_m"], 1, "m")
+        fmt_value(bme_data["altitude_m"], 1, "m"),
+        1 if bme_data.get("gas_valid") else 0,
     )
 
 
@@ -481,18 +489,26 @@ def format_mag_text(mag_data):
 def format_gps_text(gps_data):
     if not gps_data["ok"]:
         return "GPS[ERR:{}]".format(gps_data.get("error", "unknown"))
-    return "GPS[FIX={} SAT={} LAT={} LON={} ALT={}]".format(
+    return "GPS[FIX={} SAT={} LAT={} LON={} ALT={} HDOP={} SPD={} CRS={} VS={}]".format(
         int(gps_data["fix"]),
         fmt_value(gps_data["satellites"]),
         fmt_value(gps_data["latitude"]),
         fmt_value(gps_data["longitude"]),
         fmt_value(gps_data["absolute_altitude_m"], 1, "m"),
+        fmt_value(gps_data.get("hdop")),
+        fmt_value(gps_data.get("speed_kmh"), 1, "kmh"),
+        fmt_value(gps_data.get("course_deg"), 1, "deg"),
+        fmt_value(gps_data.get("vertical_speed_ms"), 2, "ms"),
     )
 
 
-def format_telemetry_line(ts, tmp_data, bme_data, mpu_data, mag_data, gps_data):
-    return "T={} {} {} {} {} {}".format(
-        ts,
+def format_telemetry_line(ts, tmp_data, bme_data, mpu_data, mag_data, gps_data, sample_id=None):
+    prefix = "T={}".format(ts)
+    if sample_id is not None:
+        prefix = "SID={} {}".format(sample_id, prefix)
+
+    return "{} {} {} {} {} {}".format(
+        prefix,
         format_tmp36_text(tmp_data),
         format_bme_text(bme_data),
         format_mpu_text(mpu_data),
@@ -525,66 +541,117 @@ def format_rfm_line(ts, tmp_data, bme_data, mag_data, gps_data):
     )
 
 
-def build_env_packet(sample_id, ts, tmp_data, bme_data):
-    tmp_temp = tmp_data["temperature_c"] if tmp_data["ok"] else None
-    bme_temp = bme_data["temperature_c"] if bme_data["ok"] else None
-    bme_pressure = bme_data["pressure_hpa"] if bme_data["ok"] else None
-    bme_humidity = bme_data["humidity_pct"] if bme_data["ok"] else None
-    bme_gas = bme_data["gas_ohms"] if bme_data["ok"] else None
+def rfm_bool(data):
+    return 1 if data.get("ok") else 0
 
-    return "E,{},{},{},{},{},{},{}".format(
+
+def rfm_scale_int(value, factor=1):
+    if value is None:
+        return "x"
+    return scale_int(value, factor)
+
+
+def build_env_packet(sample_id, ts, tmp_data, bme_data):
+    return "E,{},{},{},{},{},{},{},{},{},{},{}".format(
         sample_id,
+        short_date(ts),
         short_time(ts),
-        scale_int(tmp_temp, 10),
-        scale_int(bme_temp, 10),
-        scale_int(bme_pressure, 10),
-        scale_int(bme_humidity, 10),
-        scale_int(bme_gas),
+        rfm_bool(tmp_data),
+        rfm_bool(bme_data),
+        rfm_scale_int(tmp_data["temperature_c"] if tmp_data["ok"] else None, 10),
+        rfm_scale_int(tmp_data["voltage_v"] if tmp_data["ok"] else None, 1000),
+        rfm_scale_int(tmp_data["raw"] if tmp_data["ok"] else None),
+        rfm_scale_int(bme_data["temperature_c"] if bme_data["ok"] else None, 10),
+        rfm_scale_int(bme_data["pressure_hpa"] if bme_data["ok"] else None, 10),
+        rfm_scale_int(bme_data["humidity_pct"] if bme_data["ok"] else None, 10),
     )
 
 
-def build_motion_packet(sample_id, mpu_data):
-    return "M,{},A,{},{},{},{},{},{}".format(
+def build_bme_packet(sample_id, bme_data):
+    return "B,{},{},{},{},{}".format(
         sample_id,
-        scale_int(mpu_data["ax"] if mpu_data["ok"] else None, 1000),
-        scale_int(mpu_data["ay"] if mpu_data["ok"] else None, 1000),
-        scale_int(mpu_data["az"] if mpu_data["ok"] else None, 1000),
-        scale_int(mpu_data["gx"] if mpu_data["ok"] else None, 100),
-        scale_int(mpu_data["gy"] if mpu_data["ok"] else None, 100),
-        scale_int(mpu_data["gz"] if mpu_data["ok"] else None, 100),
+        rfm_bool(bme_data),
+        rfm_scale_int(bme_data["gas_ohms"] if bme_data["ok"] else None),
+        rfm_scale_int(bme_data["altitude_m"] if bme_data["ok"] else None, 10),
+        1 if bme_data.get("gas_valid") else 0,
+    )
+
+
+def build_accel_packet(sample_id, mpu_data):
+    return "A,{},{},{},{},{},{},{},{}".format(
+        sample_id,
+        rfm_bool(mpu_data),
+        rfm_scale_int(mpu_data["ax"] if mpu_data["ok"] else None, 1000),
+        rfm_scale_int(mpu_data["ay"] if mpu_data["ok"] else None, 1000),
+        rfm_scale_int(mpu_data["az"] if mpu_data["ok"] else None, 1000),
+        rfm_scale_int(mpu_data["gx"] if mpu_data["ok"] else None, 100),
+        rfm_scale_int(mpu_data["gy"] if mpu_data["ok"] else None, 100),
+        rfm_scale_int(mpu_data["gz"] if mpu_data["ok"] else None, 100),
+    )
+
+
+def build_orientation_packet(sample_id, mpu_data):
+    return "O,{},{},{},{},{}".format(
+        sample_id,
+        rfm_bool(mpu_data),
+        rfm_scale_int(mpu_data["temp"] if mpu_data["ok"] else None, 10),
+        rfm_scale_int(mpu_data["pitch"] if mpu_data["ok"] else None, 10),
+        rfm_scale_int(mpu_data["roll"] if mpu_data["ok"] else None, 10),
     )
 
 
 def build_mag_packet(sample_id, mag_data):
-    return "M,{},C,{},{},{}".format(
+    return "C,{},{},{},{},{},{},{}".format(
         sample_id,
-        scale_int(mag_data["x"] if mag_data["ok"] else None),
-        scale_int(mag_data["y"] if mag_data["ok"] else None),
-        scale_int(mag_data["z"] if mag_data["ok"] else None),
+        rfm_bool(mag_data),
+        rfm_scale_int(mag_data["x"] if mag_data["ok"] else None),
+        rfm_scale_int(mag_data["y"] if mag_data["ok"] else None),
+        rfm_scale_int(mag_data["z"] if mag_data["ok"] else None),
+        rfm_scale_int(mag_data["heading_deg"] if mag_data["ok"] else None, 10),
+        mag_data["chip"] if mag_data["ok"] else "0",
     )
 
 
 def build_gps_packet(sample_id, gps_data):
-    return "G,{},{},{},{},{},{},{},{}".format(
+    return "G,{},{},{},{},{},{},{},{},{},{},{}".format(
         sample_id,
+        rfm_bool(gps_data),
         int(gps_data["fix"]) if gps_data["ok"] else 0,
-        scale_int(gps_data["satellites"] if gps_data["ok"] else None),
-        scale_int(gps_data["latitude"] if gps_data["ok"] else None, 1000000),
-        scale_int(gps_data["longitude"] if gps_data["ok"] else None, 1000000),
-        scale_int(gps_data["absolute_altitude_m"] if gps_data["ok"] else None, 10),
-        gps_data["utc_date"] if gps_data["ok"] and gps_data["utc_date"] else "0",
-        gps_data["utc_time"] if gps_data["ok"] and gps_data["utc_time"] else "0",
+        rfm_scale_int(gps_data["satellites"] if gps_data["ok"] else None),
+        rfm_scale_int(gps_data["latitude"] if gps_data["ok"] else None, 1000000),
+        rfm_scale_int(gps_data["longitude"] if gps_data["ok"] else None, 1000000),
+        rfm_scale_int(gps_data["absolute_altitude_m"] if gps_data["ok"] else None, 10),
+        rfm_scale_int(gps_data.get("hdop") if gps_data["ok"] else None, 100),
+        rfm_scale_int(gps_data.get("speed_kmh") if gps_data["ok"] else None, 10),
+        rfm_scale_int(gps_data.get("course_deg") if gps_data["ok"] else None, 10),
+        rfm_scale_int(gps_data.get("vertical_speed_ms") if gps_data["ok"] else None, 100),
     )
 
 
-def build_rfm_packets(sample_id, ts, tmp_data, bme_data, mpu_data, mag_data, gps_data):
-    packets = [
+def build_line_packets(sample_id, line):
+    chunks = [
+        line[i:i + RFM_LINE_CHUNK_BYTES]
+        for i in range(0, len(line), RFM_LINE_CHUNK_BYTES)
+    ]
+    if not chunks:
+        chunks = [""]
+
+    total = len(chunks)
+    packets = []
+    for index, chunk in enumerate(chunks, 1):
+        packets.append("L,{},{},{},{}".format(sample_id, index, total, chunk))
+    return packets
+
+
+def build_rfm_packets(sample_id, telemetry_line, ts, tmp_data, bme_data, mpu_data, mag_data, gps_data):
+    return [
         build_env_packet(sample_id, ts, tmp_data, bme_data),
-        build_motion_packet(sample_id, mpu_data),
+        build_bme_packet(sample_id, bme_data),
+        build_accel_packet(sample_id, mpu_data),
+        build_orientation_packet(sample_id, mpu_data),
         build_mag_packet(sample_id, mag_data),
         build_gps_packet(sample_id, gps_data),
     ]
-    return packets
 
 
 def fit_rfm_payload(text):

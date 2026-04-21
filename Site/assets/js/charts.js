@@ -22,7 +22,7 @@ const CansatCharts = (() => {
       id: "air",
       title: "Humidity and Gas",
       unit: "",
-      series: [["bme_humidity", "Humidity %", "#6db6ff"], ["bme_gas", "Gas ohms", "#ffd166"]]
+      series: [["bme_humidity", "Humidity %", "#6db6ff"], ["bme_gas", "Gas ohms", "#ffd166"], ["bme_gas_valid", "Gas valid", "#80d27e"]]
     },
     {
       id: "acceleration",
@@ -52,17 +52,21 @@ const CansatCharts = (() => {
       id: "gps",
       title: "GPS",
       unit: "",
-      series: [["gps_fix", "Fix", "#80d27e"], ["gps_satellites", "Satellites", "#6db6ff"], ["gps_lat", "Latitude", "#ffd166"], ["gps_lon", "Longitude", "#c69cff"]]
+      series: [["gps_fix", "Fix", "#80d27e"], ["gps_satellites", "Satellites", "#6db6ff"], ["gps_lat", "Latitude", "#ffd166"], ["gps_lon", "Longitude", "#c69cff"], ["gps_hdop", "HDOP", "#ff9f6d"], ["gps_speed_kmh", "Speed km/h", "#6df6c1"], ["gps_course_deg", "Course deg", "#f66d9b"], ["gps_vertical_speed_ms", "Vertical m/s", "#b8f66d"]]
     }
   ];
 
   function labelFor(row) {
+    const sampleSuffix = row.mcu_sample_id !== null && row.mcu_sample_id !== undefined
+      ? ` SID ${row.mcu_sample_id}`
+      : "";
+
     if (row.device_time) {
-      return row.device_time;
+      return `${row.device_time}${sampleSuffix}`;
     }
 
     if (row.received_at) {
-      return String(row.received_at).slice(11, 19);
+      return `${String(row.received_at).slice(11, 19)}${sampleSuffix}`;
     }
 
     return String(row.line_number || row.id || "");
