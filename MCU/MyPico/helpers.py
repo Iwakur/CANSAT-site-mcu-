@@ -18,6 +18,7 @@ LED_BETWEEN_CYCLES_MS = 20
 LED_BLUE_BIP_MS = 15
 LED_DARK_BIP_MS = 10
 leds = None
+GPS_RTC_UTC_OFFSET_HOURS = 2
 
 
 def configure_helpers(
@@ -360,6 +361,44 @@ def weekday_from_date(year, month, day):
     return 7 if sunday_based == 0 else sunday_based
 
 
+def is_leap_year(year):
+    return year % 4 == 0 and (year % 100 != 0 or year % 400 == 0)
+
+
+def days_in_month(year, month):
+    if month == 2:
+        return 29 if is_leap_year(year) else 28
+    if month in (4, 6, 9, 11):
+        return 30
+    return 31
+
+
+def add_hours_to_datetime(year, month, day, hour, offset_hours):
+    hour += offset_hours
+
+    while hour >= 24:
+        hour -= 24
+        day += 1
+        if day > days_in_month(year, month):
+            day = 1
+            month += 1
+            if month > 12:
+                month = 1
+                year += 1
+
+    while hour < 0:
+        hour += 24
+        day -= 1
+        if day < 1:
+            month -= 1
+            if month < 1:
+                month = 12
+                year -= 1
+            day = days_in_month(year, month)
+
+    return year, month, day, hour
+
+
 def sync_rtc_from_gps(rtc, gps_data):
     if not gps_data["ok"] or not gps_data["rtc_update_ready"]:
         return False
@@ -372,6 +411,13 @@ def sync_rtc_from_gps(rtc, gps_data):
         hour = int(time_text[0:2])
         minute = int(time_text[3:5])
         second = int(time_text[6:8])
+        year, month, day, hour = add_hours_to_datetime(
+            year,
+            month,
+            day,
+            hour,
+            GPS_RTC_UTC_OFFSET_HOURS
+        )
         weekday = weekday_from_date(year, month, day)
         return rtc.set_datetime(year, month, day, weekday, hour, minute, second)
     except Exception:
