@@ -5,7 +5,7 @@ Provides:
 - SDCard: low-level SPI block device
 - SDCardLogger: file appending for telemetry + logs
 """
-from machine import Pin, SoftSPI
+from machine import Pin, SoftSPI, SPI
 from micropython import const
 import time
 import os
@@ -365,6 +365,8 @@ class SDModule:
         mosi_pin,
         miso_pin,
         cs_pin,
+        spi_id=0,
+        use_hardware_spi=False,
         baudrate=500000,
         mount_point="/sd",
         data_filename="data.txt",
@@ -374,6 +376,8 @@ class SDModule:
         self.mosi_pin = mosi_pin
         self.miso_pin = miso_pin
         self.cs_pin = cs_pin
+        self.spi_id = spi_id
+        self.use_hardware_spi = use_hardware_spi
         self.baudrate = baudrate
         self.mount_point = mount_point
         self.data_filename = data_filename
@@ -389,16 +393,47 @@ class SDModule:
 
         self._init_all()
 
-    def _init_all(self):
-        try:
-            self.spi = SoftSPI(
+    def _activate_spi(self):
+        if not self.use_hardware_spi:
+            return
+
+        if self.spi is None:
+            self.spi = SPI(
+                self.spi_id,
                 baudrate=self.baudrate,
                 polarity=0,
                 phase=0,
+                firstbit=SPI.MSB,
                 sck=Pin(self.sck_pin),
                 mosi=Pin(self.mosi_pin),
                 miso=Pin(self.miso_pin)
             )
+            return
+
+        self.spi.init(
+            baudrate=self.baudrate,
+            polarity=0,
+            phase=0,
+            firstbit=SPI.MSB,
+            sck=Pin(self.sck_pin),
+            mosi=Pin(self.mosi_pin),
+            miso=Pin(self.miso_pin)
+        )
+
+    def _init_all(self):
+        try:
+            if self.use_hardware_spi:
+                self.spi = None
+                self._activate_spi()
+            else:
+                self.spi = SoftSPI(
+                    baudrate=self.baudrate,
+                    polarity=0,
+                    phase=0,
+                    sck=Pin(self.sck_pin),
+                    mosi=Pin(self.mosi_pin),
+                    miso=Pin(self.miso_pin)
+                )
 
             self.cs = Pin(self.cs_pin, Pin.OUT)
 
@@ -442,6 +477,7 @@ class SDModule:
                 if not self.reconnect():
                     return False
 
+            self._activate_spi()
             if not self.logger.write_data(line):
                 self.ok = False
                 self.last_error = self.logger.last_error
@@ -466,6 +502,7 @@ class SDModule:
                 if not self.reconnect():
                     return False
 
+            self._activate_spi()
             if not self.logger.write_log(line):
                 self.ok = False
                 self.last_error = self.logger.last_error

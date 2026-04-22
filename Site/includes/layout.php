@@ -23,8 +23,9 @@ function page_header(string $title, string $active): void
         </a>
         <nav>
             <a class="<?= $active === 'live' ? 'active' : '' ?>" href="live.php">Live</a>
+            <a class="<?= $active === 'replay' ? 'active' : '' ?>" href="replay.php">Replay</a>
             <a class="<?= $active === 'logs' ? 'active' : '' ?>" href="logs.php">Logs</a>
-            <a class="<?= $active === 'import' ? 'active' : '' ?>" href="import.php">Import / Saved Data</a>
+            <a class="<?= $active === 'import' ? 'active' : '' ?>" href="import.php">Saved</a>
         </nav>
     </header>
     <main class="page">

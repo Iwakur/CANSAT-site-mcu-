@@ -1,11 +1,14 @@
 const importForm = document.getElementById("importForm");
 const importMessage = document.getElementById("message");
 const datasetSelect = document.getElementById("datasetSelect");
+const copyLiveButton = document.getElementById("copyLive");
 const deleteButton = document.getElementById("deleteDataset");
 const clearImportsButton = document.getElementById("clearImports");
 const savedStats = document.getElementById("savedStats");
 const chartContainer = document.getElementById("charts");
+const rawToggle = document.getElementById("rawToggle");
 const charts = {};
+let lastRows = [];
 
 function selectedDataset() {
   return datasetSelect.options[datasetSelect.selectedIndex];
@@ -60,9 +63,10 @@ async function loadSelectedDataset() {
   }
 
   const rows = data.rows || [];
-  savedStats.textContent = `${data.dataset.name}: ${rows.length} row(s).`;
+  lastRows = rows;
+  CansatCharts.renderSummary(rows, data.meta || {}, savedStats);
   CansatCharts.setMessage(importMessage, rows.length ? "Dataset loaded." : "Dataset has no rows.");
-  CansatCharts.render(rows, chartContainer, charts, importMessage);
+  CansatCharts.render(rows, chartContainer, charts, importMessage, { showRaw: Boolean(rawToggle && rawToggle.checked) });
 }
 
 importForm.addEventListener("submit", async (event) => {
@@ -95,6 +99,25 @@ importForm.addEventListener("submit", async (event) => {
 
 datasetSelect.addEventListener("change", () => {
   loadSelectedDataset().catch((error) => CansatCharts.setMessage(importMessage, error.message, "error"));
+});
+
+copyLiveButton.addEventListener("click", async () => {
+  try {
+    CansatCharts.setMessage(importMessage, "Copying live dataset...");
+    const body = new URLSearchParams({ action: "copy_live" });
+    const response = await fetch("api/datasets.php", { method: "POST", body });
+    const data = await response.json();
+
+    if (!data.ok) {
+      throw new Error(data.error || "Could not copy live dataset.");
+    }
+
+    CansatCharts.setMessage(importMessage, `Copied Live to ${data.dataset_name}.`, "ok");
+    await loadDatasets(data.dataset_id);
+    await loadSelectedDataset();
+  } catch (error) {
+    CansatCharts.setMessage(importMessage, error.message, "error");
+  }
 });
 
 deleteButton.addEventListener("click", async () => {
@@ -145,6 +168,12 @@ clearImportsButton.addEventListener("click", async () => {
   await loadDatasets();
   await loadSelectedDataset();
 });
+
+if (rawToggle) {
+  rawToggle.addEventListener("change", () => {
+    CansatCharts.render(lastRows, chartContainer, charts, importMessage, { showRaw: rawToggle.checked });
+  });
+}
 
 loadDatasets()
   .then(loadSelectedDataset)

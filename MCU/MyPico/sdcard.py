@@ -5,14 +5,15 @@ Provides:
 - SDCard: low-level SPI block device
 - SDCardLogger: file appending for telemetry + logs
 """
-from machine import Pin, SoftSPI
+from machine import Pin, SoftSPI, SPI
 from micropython import const
 import time
 import os
 import utime
 
 
-_CMD_TIMEOUT = const(20)
+_CMD_TIMEOUT = const(100)
+_WRITE_TIMEOUT = const(20000)
 
 _R1_IDLE_STATE = const(1 << 0)
 _R1_ILLEGAL_COMMAND = const(1 << 2)
@@ -172,32 +173,40 @@ class SDCard:
     def write(self, token, buf):
         self.cs(0)
 
-        self.spi.read(1, token)
-        self.spi.write(buf)
-        self.spi.write(b"\xff")
-        self.spi.write(b"\xff")
+        try:
+            self.spi.read(1, token)
+            self.spi.write(buf)
+            self.spi.write(b"\xff")
+            self.spi.write(b"\xff")
 
-        if (self.spi.read(1, 0xFF)[0] & 0x1F) != 0x05:
+            if (self.spi.read(1, 0xFF)[0] & 0x1F) != 0x05:
+                raise OSError("SD write rejected")
+
+            for _ in range(_WRITE_TIMEOUT):
+                if self.spi.read(1, 0xFF)[0] != 0:
+                    break
+            else:
+                raise OSError("timeout waiting for SD write")
+
+        finally:
             self.cs(1)
             self.spi.write(b"\xff")
-            return
-
-        while self.spi.read(1, 0xFF)[0] == 0:
-            pass
-
-        self.cs(1)
-        self.spi.write(b"\xff")
 
     def write_token(self, token):
         self.cs(0)
-        self.spi.read(1, token)
-        self.spi.write(b"\xff")
+        try:
+            self.spi.read(1, token)
+            self.spi.write(b"\xff")
 
-        while self.spi.read(1, 0xFF)[0] == 0x00:
-            pass
+            for _ in range(_WRITE_TIMEOUT):
+                if self.spi.read(1, 0xFF)[0] != 0x00:
+                    break
+            else:
+                raise OSError("timeout waiting for SD write token")
 
-        self.cs(1)
-        self.spi.write(b"\xff")
+        finally:
+            self.cs(1)
+            self.spi.write(b"\xff")
 
     def readblocks(self, block_num, buf):
         self.spi.write(b"\xff")
@@ -332,6 +341,29 @@ class SDCardLogger:
             self.last_error = str(e)
             return False
 
+    def write_data_lines(self, lines):
+        try:
+            if not self.mounted:
+                if not self.reconnect():
+                    return False
+
+            with open(self.data_path, "a") as f:
+                for line in lines:
+                    f.write(line + "\n")
+            try:
+                os.sync()
+            except Exception:
+                pass
+            self.ok = True
+            self.last_error = None
+            return True
+
+        except Exception as e:
+            self.ok = False
+            self.mounted = False
+            self.last_error = str(e)
+            return False
+
     def write_log(self, line):
         try:
             if not self.mounted:
@@ -339,6 +371,29 @@ class SDCardLogger:
                     return False
 
             self._append_line(self.log_path, line)
+            self.ok = True
+            self.last_error = None
+            return True
+
+        except Exception as e:
+            self.ok = False
+            self.mounted = False
+            self.last_error = str(e)
+            return False
+
+    def write_log_lines(self, lines):
+        try:
+            if not self.mounted:
+                if not self.reconnect():
+                    return False
+
+            with open(self.log_path, "a") as f:
+                for line in lines:
+                    f.write(line + "\n")
+            try:
+                os.sync()
+            except Exception:
+                pass
             self.ok = True
             self.last_error = None
             return True
@@ -365,6 +420,8 @@ class SDModule:
         mosi_pin,
         miso_pin,
         cs_pin,
+        spi_id=0,
+        use_hardware_spi=False,
         baudrate=500000,
         mount_point="/sd",
         data_filename="data.txt",
@@ -374,6 +431,8 @@ class SDModule:
         self.mosi_pin = mosi_pin
         self.miso_pin = miso_pin
         self.cs_pin = cs_pin
+        self.spi_id = spi_id
+        self.use_hardware_spi = use_hardware_spi
         self.baudrate = baudrate
         self.mount_point = mount_point
         self.data_filename = data_filename
@@ -389,16 +448,60 @@ class SDModule:
 
         self._init_all()
 
-    def _init_all(self):
+    def release_bus(self):
         try:
-            self.spi = SoftSPI(
+            if self.cs is not None:
+                self.cs(1)
+        except Exception:
+            pass
+
+        try:
+            if self.spi is not None:
+                self.spi.write(b"\xff\xff\xff\xff")
+        except Exception:
+            pass
+
+    def _activate_spi(self):
+        if not self.use_hardware_spi:
+            return
+
+        if self.spi is None:
+            self.spi = SPI(
+                self.spi_id,
                 baudrate=self.baudrate,
                 polarity=0,
                 phase=0,
+                firstbit=SPI.MSB,
                 sck=Pin(self.sck_pin),
                 mosi=Pin(self.mosi_pin),
                 miso=Pin(self.miso_pin)
             )
+            return
+
+        self.spi.init(
+            baudrate=self.baudrate,
+            polarity=0,
+            phase=0,
+            firstbit=SPI.MSB,
+            sck=Pin(self.sck_pin),
+            mosi=Pin(self.mosi_pin),
+            miso=Pin(self.miso_pin)
+        )
+
+    def _init_all(self):
+        try:
+            if self.use_hardware_spi:
+                self.spi = None
+                self._activate_spi()
+            else:
+                self.spi = SoftSPI(
+                    baudrate=self.baudrate,
+                    polarity=0,
+                    phase=0,
+                    sck=Pin(self.sck_pin),
+                    mosi=Pin(self.mosi_pin),
+                    miso=Pin(self.miso_pin)
+                )
 
             self.cs = Pin(self.cs_pin, Pin.OUT)
 
@@ -442,6 +545,7 @@ class SDModule:
                 if not self.reconnect():
                     return False
 
+            self._activate_spi()
             if not self.logger.write_data(line):
                 self.ok = False
                 self.last_error = self.logger.last_error
@@ -459,6 +563,38 @@ class SDModule:
             self.logger = None
             self.sd = None
             return False
+        finally:
+            self.release_bus()
+
+    def write_data_lines(self, lines):
+        try:
+            if not lines:
+                return True
+
+            if self.logger is None:
+                if not self.reconnect():
+                    return False
+
+            self._activate_spi()
+            if not self.logger.write_data_lines(lines):
+                self.ok = False
+                self.last_error = self.logger.last_error
+                self.logger = None
+                self.sd = None
+                return False
+
+            self.ok = True
+            self.last_error = None
+            return True
+
+        except Exception as e:
+            self.ok = False
+            self.last_error = str(e)
+            self.logger = None
+            self.sd = None
+            return False
+        finally:
+            self.release_bus()
 
     def write_log(self, line):
         try:
@@ -466,6 +602,7 @@ class SDModule:
                 if not self.reconnect():
                     return False
 
+            self._activate_spi()
             if not self.logger.write_log(line):
                 self.ok = False
                 self.last_error = self.logger.last_error
@@ -483,3 +620,35 @@ class SDModule:
             self.logger = None
             self.sd = None
             return False
+        finally:
+            self.release_bus()
+
+    def write_log_lines(self, lines):
+        try:
+            if not lines:
+                return True
+
+            if self.logger is None:
+                if not self.reconnect():
+                    return False
+
+            self._activate_spi()
+            if not self.logger.write_log_lines(lines):
+                self.ok = False
+                self.last_error = self.logger.last_error
+                self.logger = None
+                self.sd = None
+                return False
+
+            self.ok = True
+            self.last_error = None
+            return True
+
+        except Exception as e:
+            self.ok = False
+            self.last_error = str(e)
+            self.logger = None
+            self.sd = None
+            return False
+        finally:
+            self.release_bus()

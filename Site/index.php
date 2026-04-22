@@ -30,6 +30,11 @@ page_header('Home', 'home');
         <strong>Live</strong>
         Ground-station data graphed from the protected Live dataset.
     </a>
+    <a class="stat starship-card" href="replay.php">
+        <span class="ship-tag">Flight state</span>
+        <strong>Replay</strong>
+        Scrub saved telemetry and inspect the current 3D CanSat state.
+    </a>
     <a class="stat starship-card" href="logs.php">
         <span class="ship-tag">Ground station</span>
         <strong>Logs</strong>

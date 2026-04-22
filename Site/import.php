@@ -39,8 +39,13 @@ page_header('Import / Saved Data', 'import');
     <h2>Datasets</h2>
     <div class="toolbar">
         <select id="datasetSelect"></select>
+        <button id="copyLive" type="button">Copy live dataset</button>
         <button id="deleteDataset" class="danger" type="button">Delete selected</button>
         <button id="clearImports" class="danger" type="button">Clear saved datasets</button>
+        <label class="toggle-option">
+            <input id="rawToggle" type="checkbox">
+            <span>Raw values</span>
+        </label>
         <span id="savedStats" class="muted"></span>
     </div>
 </section>

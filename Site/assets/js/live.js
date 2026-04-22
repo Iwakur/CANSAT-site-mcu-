@@ -3,8 +3,10 @@ const liveChartContainer = document.getElementById("charts");
 const liveMessage = document.getElementById("message");
 const liveStats = document.getElementById("liveStats");
 const clearButton = document.getElementById("clearLive");
+const rawToggle = document.getElementById("rawToggle");
 let liveRequestInFlight = false;
 let lastRenderedSignature = "";
+let lastRenderedRawState = false;
 let lastGoodRows = [];
 let lastLiveUpdateAt = null;
 
@@ -33,13 +35,13 @@ async function loadLive() {
     }
 
     CansatCharts.setMessage(liveMessage, rows.length ? `Live dataset: ${rows.length} latest row(s).` : "Waiting for live telemetry.");
-    liveStats.textContent = rows.length
-      ? `Rows in DB: ${meta.row_count || rows.length} | Last received: ${meta.last_received_at || rows[rows.length - 1].received_at}${lastLiveUpdateAt ? ` | Updated: ${lastLiveUpdateAt.toLocaleTimeString()}` : ""}`
-      : "No rows received yet.";
+    CansatCharts.renderSummary(rows, meta, liveStats);
 
-    if (signature !== lastRenderedSignature) {
-      CansatCharts.render(rows, liveChartContainer, liveCharts, liveMessage);
+    const showRaw = Boolean(rawToggle && rawToggle.checked);
+    if (signature !== lastRenderedSignature || showRaw !== lastRenderedRawState) {
+      CansatCharts.render(rows, liveChartContainer, liveCharts, liveMessage, { showRaw });
       lastRenderedSignature = signature;
+      lastRenderedRawState = showRaw;
     }
   } catch (error) {
     if (lastGoodRows.length) {
@@ -72,9 +74,20 @@ if (clearButton) {
     liveChartContainer.innerHTML = "";
     liveChartContainer.dataset.ready = "";
     lastRenderedSignature = "";
+    lastRenderedRawState = Boolean(rawToggle && rawToggle.checked);
     lastGoodRows = [];
     lastLiveUpdateAt = null;
     loadLive();
+  });
+}
+
+if (rawToggle) {
+  rawToggle.addEventListener("change", () => {
+    lastRenderedSignature = "";
+    if (lastGoodRows.length) {
+      CansatCharts.render(lastGoodRows, liveChartContainer, liveCharts, liveMessage, { showRaw: rawToggle.checked });
+      lastRenderedRawState = rawToggle.checked;
+    }
   });
 }
 

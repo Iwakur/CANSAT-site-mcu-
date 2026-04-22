@@ -23,6 +23,10 @@ page_header('Live', 'live');
     <?php endif; ?>
     <div class="toolbar">
         <button id="clearLive" class="danger" type="button">Clear live data</button>
+        <label class="toggle-option">
+            <input id="rawToggle" type="checkbox">
+            <span>Raw values</span>
+        </label>
         <span id="liveStats" class="muted"></span>
     </div>
 </section>

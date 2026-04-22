@@ -55,8 +55,12 @@ SD_SCK_PIN = 2
 SD_MOSI_PIN = 3
 SD_MISO_PIN = 4
 SD_CS_PIN = 5
+SD_SPI_ID = 0
+SD_USE_HARDWARE_SPI = False
 SD_BAUDRATE = 500000
-SD_WRITE_ENABLED = False
+SD_WRITE_ENABLED = True
+SD_RECONNECT_INTERVAL_MS = 10000
+SD_FLUSH_EVERY_SAMPLES = 5
 
 # LED modules
 MISSION_LED_PIN = 10
@@ -90,17 +94,17 @@ RFM_TX_POWER_DBM = 13
 RFM_NODE_ID = 0xCA
 RFM_DESTINATION_ID = 0xA6
 RFM_ACK_TIMEOUT_MS = 350
-RFM_ACK_RETRIES = 2
+RFM_ACK_RETRIES = 0
 RFM_ENCRYPTION_KEY = b"CANSAT2026RFM69!"
 RFM_MAX_PAYLOAD_BYTES = 60
 RFM_LOG_EVERY_SEND = False
-RFM_ACK_BLUE_BLINK_MS = 40
+RFM_ACK_BLUE_BLINK_MS = 5
 DEBUG_TELEMETRY = True
 DEBUG_TELEMETRY_EVERY_SAMPLES = 1
 RFM_STATUS_EVERY_SAMPLES = 1
 
 # Main loop
-LOOP_PERIOD_MS = 1000
+LOOP_PERIOD_MS = 2000
 SENSOR_RECONNECT_INTERVAL_MS = 30000
 RFM_RECONNECT_INTERVAL_MS = 10000
 
@@ -122,6 +126,32 @@ LED_MAIN_ERROR_RED_MS = 60
 # HELPERS
 # =========================
 # Helper functions and wrapper classes live in helpers.py.
+
+
+def release_sd_cs():
+    try:
+        Pin(SD_CS_PIN, Pin.OUT, value=1)
+    except Exception:
+        pass
+
+
+def release_rfm_cs():
+    try:
+        Pin(RFM_CS_PIN, Pin.OUT, value=1)
+    except Exception:
+        pass
+
+
+def select_sd_bus():
+    release_rfm_cs()
+    release_sd_cs()
+    utime.sleep_us(50)
+
+
+def select_rfm_bus():
+    release_sd_cs()
+    release_rfm_cs()
+    utime.sleep_us(50)
 
 
 class CompatibleRFM69:
@@ -256,6 +286,25 @@ class CompatibleRFM69:
         else:
             self.radio.set_mode(mode)
 
+    def activate_spi(self):
+        self.spi = SPI(
+            self.spi_id,
+            baudrate=self.spi_baudrate,
+            polarity=0,
+            phase=0,
+            firstbit=SPI.MSB,
+            sck=Pin(self.sck_pin),
+            mosi=Pin(self.mosi_pin),
+            miso=Pin(self.miso_pin)
+        )
+        if self.radio is not None:
+            self.radio.spi = self.spi
+        release_sd_cs()
+        try:
+            self.nss.high()
+        except Exception:
+            pass
+
     def send_line(self, text):
         try:
             if not self.ok:
@@ -273,11 +322,11 @@ class CompatibleRFM69:
                 payload = payload[:RFM_MAX_PAYLOAD_BYTES]
 
             self.ok = True
-            if self.radio.send_with_ack(payload):
+            if self.radio.send(payload):
                 self.last_error = None
                 return True
 
-            self.last_error = "NO_ACK id={}".format(self.radio.identifier)
+            self.last_error = "TX_FAIL id={}".format(self.radio.identifier)
             return False
 
         except Exception as e:
@@ -450,6 +499,14 @@ def bool_status_color(ok):
     return module_leds.GREEN if ok else module_leds.RED
 
 
+def sd_status_color(status):
+    if status == "buffering":
+        return module_leds.ORANGE
+    if status == "writing":
+        return module_leds.BLUE
+    return module_leds.GREEN if status else module_leds.RED
+
+
 def rfm_status_color(status):
     if status == "no_ack":
         return module_leds.ORANGE
@@ -483,9 +540,12 @@ def gps_status_color(gps_state):
 def mission_health_level(status_map):
     module_failures = 0
 
-    for key in ("rtc", "tmp36", "bme", "mpu", "mag", "sd"):
+    for key in ("rtc", "tmp36", "bme", "mpu", "mag"):
         if not status_map.get(key):
             module_failures += 1
+
+    if status_map.get("sd") is False:
+        module_failures += 1
 
     if not rfm_status_ok(status_map.get("rfm")):
         module_failures += 1
@@ -512,7 +572,7 @@ def update_module_leds(status_map):
     module_leds._set(MODULE_MPU, bool_status_color(status_map["mpu"]))
     module_leds._set(MODULE_MAG, bool_status_color(status_map["mag"]))
     module_leds._set(MODULE_GPS, gps_status_color(status_map["gps"]))
-    module_leds._set(MODULE_SD, bool_status_color(status_map["sd"]))
+    module_leds._set(MODULE_SD, sd_status_color(status_map["sd"]))
     module_leds._set(MODULE_RFM, rfm_status_color(status_map["rfm"]))
     module_leds.show()
 
@@ -874,6 +934,7 @@ Pin(RFM_CS_PIN, Pin.OUT, value=1)
 # INIT SD MODULE
 # =========================
 if SD_WRITE_ENABLED:
+    select_sd_bus()
     sdmod = StartupModule(
         "SD",
         lambda: SDModule(
@@ -881,6 +942,8 @@ if SD_WRITE_ENABLED:
             mosi_pin=SD_MOSI_PIN,
             miso_pin=SD_MISO_PIN,
             cs_pin=SD_CS_PIN,
+            spi_id=SD_SPI_ID,
+            use_hardware_spi=SD_USE_HARDWARE_SPI,
             baudrate=SD_BAUDRATE,
             mount_point="/sd",
             data_filename="data.txt",
@@ -897,12 +960,12 @@ if SD_WRITE_ENABLED:
         print("SD CARD READY")
     else:
         print("SD CARD NOT READY:", sdmod.last_error)
-        sdmod = NullSDModule(sdmod.last_error)
 
 
 # =========================
 # INIT RFM69
 # =========================
+select_rfm_bus()
 rfm = StartupModule(
     "RFM69",
     lambda: CompatibleRFM69(
@@ -1027,7 +1090,80 @@ last_mpu_reconnect_ms = utime.ticks_ms()
 last_tmp36_reconnect_ms = utime.ticks_ms()
 last_mag_reconnect_ms = utime.ticks_ms()
 last_gps_reconnect_ms = utime.ticks_ms()
+last_sd_reconnect_ms = utime.ticks_ms()
 last_rfm_reconnect_ms = utime.ticks_ms()
+sd_data_buffer = []
+sd_log_buffer = []
+rfm_spi_restore_needed = False
+
+
+def queue_sd_log(line):
+    if not SD_WRITE_ENABLED:
+        return
+
+    try:
+        if sdmod.ok:
+            select_sd_bus()
+            sdmod.write_log(line)
+    except Exception:
+        pass
+    finally:
+        try:
+            sdmod.release_bus()
+        except Exception:
+            pass
+        restore_rfm_bus()
+
+
+def restore_rfm_bus():
+    global rfm_spi_restore_needed
+
+    select_rfm_bus()
+    try:
+        rfm.activate_spi()
+        rfm_spi_restore_needed = False
+        return True
+    except Exception:
+        rfm_spi_restore_needed = True
+        return False
+
+
+def flush_sd_buffers():
+    global last_sd_reconnect_ms, rfm_spi_restore_needed
+
+    if not SD_WRITE_ENABLED:
+        return False
+
+    if not sd_data_buffer and not sd_log_buffer:
+        return sdmod.ok
+
+    if not sdmod.ok and not retry_due(last_sd_reconnect_ms, SD_RECONNECT_INTERVAL_MS):
+        return False
+
+    module_leds._set(MODULE_SD, module_leds.BLUE)
+    module_leds.show()
+    select_sd_bus()
+
+    data_ok = False
+    log_ok = False
+    try:
+        data_ok = sdmod.write_data_lines(sd_data_buffer)
+        log_ok = sdmod.write_log_lines(sd_log_buffer)
+    finally:
+        try:
+            sdmod.release_bus()
+        except Exception:
+            pass
+        rfm_spi_restore_needed = True
+        restore_rfm_bus()
+
+    if data_ok and log_ok:
+        del sd_data_buffer[:]
+        del sd_log_buffer[:]
+        return True
+
+    last_sd_reconnect_ms = utime.ticks_ms()
+    return False
 
 
 # =========================
@@ -1043,7 +1179,7 @@ while True:
 
         if rtc_data["ok"]:
             if not rtc_was_ok:
-                sdmod.write_log(log_line(ts, "INFO", "RTC", "RECONNECTED"))
+                queue_sd_log(log_line(ts, "INFO", "RTC", "RECONNECTED"))
             rtc_was_ok = True
         else:
             if retry_due(last_rtc_reconnect_ms, SENSOR_RECONNECT_INTERVAL_MS):
@@ -1056,11 +1192,11 @@ while True:
 
         if tmp36_data["ok"]:
             if not tmp36_was_ok:
-                sdmod.write_log(log_line(ts, "INFO", "TMP36", "RECONNECTED"))
+                queue_sd_log(log_line(ts, "INFO", "TMP36", "RECONNECTED"))
             tmp36_was_ok = True
         else:
             if tmp36_was_ok:
-                sdmod.write_log(log_line(ts, "ERROR", "TMP36", tmp36_data.get("error", "unknown")))
+                queue_sd_log(log_line(ts, "ERROR", "TMP36", tmp36_data.get("error", "unknown")))
             if retry_due(last_tmp36_reconnect_ms, SENSOR_RECONNECT_INTERVAL_MS):
                 tmp36.reconnect()
                 last_tmp36_reconnect_ms = utime.ticks_ms()
@@ -1071,11 +1207,11 @@ while True:
 
         if bme_data["ok"]:
             if not bme_was_ok:
-                sdmod.write_log(log_line(ts, "INFO", "BME688", "RECONNECTED"))
+                queue_sd_log(log_line(ts, "INFO", "BME688", "RECONNECTED"))
             bme_was_ok = True
         else:
             if bme_was_ok:
-                sdmod.write_log(log_line(ts, "ERROR", "BME688", bme_data.get("error", "unknown")))
+                queue_sd_log(log_line(ts, "ERROR", "BME688", bme_data.get("error", "unknown")))
             if retry_due(last_bme_reconnect_ms, SENSOR_RECONNECT_INTERVAL_MS):
                 bme.reconnect()
                 last_bme_reconnect_ms = utime.ticks_ms()
@@ -1086,11 +1222,11 @@ while True:
 
         if mpu_data["ok"]:
             if not mpu_was_ok:
-                sdmod.write_log(log_line(ts, "INFO", "MPU6500", "RECONNECTED"))
+                queue_sd_log(log_line(ts, "INFO", "MPU6500", "RECONNECTED"))
             mpu_was_ok = True
         else:
             if mpu_was_ok:
-                sdmod.write_log(log_line(ts, "ERROR", "MPU6500", mpu_data.get("error", "unknown")))
+                queue_sd_log(log_line(ts, "ERROR", "MPU6500", mpu_data.get("error", "unknown")))
             if retry_due(last_mpu_reconnect_ms, SENSOR_RECONNECT_INTERVAL_MS):
                 mpu.reconnect()
                 last_mpu_reconnect_ms = utime.ticks_ms()
@@ -1101,11 +1237,11 @@ while True:
 
         if mag_data["ok"]:
             if not mag_was_ok:
-                sdmod.write_log(log_line(ts, "INFO", "MAG", "RECONNECTED"))
+                queue_sd_log(log_line(ts, "INFO", "MAG", "RECONNECTED"))
             mag_was_ok = True
         else:
             if mag_was_ok:
-                sdmod.write_log(log_line(ts, "ERROR", "MAG", mag_data.get("error", "unknown")))
+                queue_sd_log(log_line(ts, "ERROR", "MAG", mag_data.get("error", "unknown")))
             if retry_due(last_mag_reconnect_ms, SENSOR_RECONNECT_INTERVAL_MS):
                 mag.reconnect()
                 last_mag_reconnect_ms = utime.ticks_ms()
@@ -1116,14 +1252,14 @@ while True:
 
         if gps_data["ok"]:
             if not gps_was_ok:
-                sdmod.write_log(log_line(ts, "INFO", "GPS", "RECONNECTED"))
+                queue_sd_log(log_line(ts, "INFO", "GPS", "RECONNECTED"))
                 gps_time_synced_for_connection = False
                 gps_packet_sent_for_connection = False
                 gps_fix_packet_sent_for_connection = False
             gps_was_ok = True
         else:
             if gps_was_ok:
-                sdmod.write_log(log_line(ts, "ERROR", "GPS", gps_data.get("error", "unknown")))
+                queue_sd_log(log_line(ts, "ERROR", "GPS", gps_data.get("error", "unknown")))
             if retry_due(last_gps_reconnect_ms, SENSOR_RECONNECT_INTERVAL_MS):
                 gps.reconnect()
                 last_gps_reconnect_ms = utime.ticks_ms()
@@ -1134,19 +1270,19 @@ while True:
 
         if gps_data["ok"] and gps_data["fix"]:
             if not gps_had_fix:
-                sdmod.write_log(log_line(ts, "INFO", "GPS", "FIX_ACQUIRED"))
+                queue_sd_log(log_line(ts, "INFO", "GPS", "FIX_ACQUIRED"))
             gps_had_fix = True
         else:
             if gps_had_fix:
-                sdmod.write_log(log_line(ts, "WARN", "GPS", "FIX_LOST"))
+                queue_sd_log(log_line(ts, "WARN", "GPS", "FIX_LOST"))
             gps_had_fix = False
 
         if gps_data["ok"] and gps_data["rtc_update_ready"] and not gps_time_synced_for_connection:
             if sync_rtc_from_gps(rtc, gps_data):
-                sdmod.write_log(log_line(ts, "INFO", "GPS", "RTC_SYNCED"))
+                queue_sd_log(log_line(ts, "INFO", "GPS", "RTC_SYNCED"))
                 gps_time_synced_for_connection = True
             else:
-                sdmod.write_log(log_line(ts, "WARN", "GPS", "RTC_SYNC_FAILED"))
+                queue_sd_log(log_line(ts, "WARN", "GPS", "RTC_SYNC_FAILED"))
 
         # ---------- FORMAT OUTPUTS ----------
         telemetry_line = format_telemetry_line(ts, tmp36_data, bme_data, mpu_data, mag_data, gps_data, sample_id)
@@ -1158,24 +1294,33 @@ while True:
             gps_fix_packet_sent_for_connection = True
 
         rfm_packets = build_rfm_packets(sample_id, telemetry_line, ts, tmp36_data, bme_data, mpu_data, mag_data, gps_data)
-
-        # ---------- SD WRITE / HEALTH ----------
-        current_sd_ok = sd_was_ok
-        data_ok = sdmod.write_data(telemetry_line)
-
-        if data_ok:
-            if not sd_was_ok:
-                sdmod.write_log(log_line(ts, "INFO", "SD", "RECONNECTED"))
-            current_sd_ok = True
+        if SD_WRITE_ENABLED:
+            current_sd_status = "writing" if sdmod.ok else False
+            module_leds._set(MODULE_SD, module_leds.BLUE if sdmod.ok else module_leds.RED)
+            module_leds.show()
+            data_ok = False
+            if sdmod.ok:
+                select_sd_bus()
+                try:
+                    data_ok = sdmod.write_data(telemetry_line)
+                finally:
+                    try:
+                        sdmod.release_bus()
+                    except Exception:
+                        pass
+                    rfm_spi_restore_needed = True
+                    restore_rfm_bus()
+            current_sd_status = True if data_ok else False
+            sd_was_ok = current_sd_status
         else:
-            current_sd_ok = False
-
-        sd_was_ok = current_sd_ok
+            current_sd_status = False
 
         # ---------- RFM SEND ----------
         current_rfm_status = rfm_was_ok
         all_rfm_ok = True
         rfm_no_ack = False
+        if rfm_spi_restore_needed:
+            restore_rfm_bus()
 
         for packet in rfm_packets:
             rfm_tx_line = fit_rfm_payload(packet)
@@ -1183,16 +1328,16 @@ while True:
             if RFM_LOG_EVERY_SEND:
                 tx_attempt_log = log_line(ts, "INFO", "RFM69", "TX_ATTEMPT {}".format(rfm_tx_line))
                 print(tx_attempt_log)
-                sdmod.write_log(tx_attempt_log)
+                queue_sd_log(tx_attempt_log)
 
             rfm_ok = rfm.send_line(rfm_tx_line)
 
             if rfm_ok:
                 blink_rfm_ack()
                 if RFM_LOG_EVERY_SEND:
-                    tx_ok_log = log_line(ts, "INFO", "RFM69", "TX_ACK_OK {}".format(rfm_tx_line))
+                    tx_ok_log = log_line(ts, "INFO", "RFM69", "TX_OK {}".format(rfm_tx_line))
                     print(tx_ok_log)
-                    sdmod.write_log(tx_ok_log)
+                    queue_sd_log(tx_ok_log)
             else:
                 all_rfm_ok = False
                 rfm_no_ack = is_no_ack_error(rfm.last_error)
@@ -1204,14 +1349,14 @@ while True:
                     "{} {} ERROR={}".format(error_label, rfm_tx_line, rfm.last_error)
                 )
                 print(tx_fail_log)
-                sdmod.write_log(tx_fail_log)
+                queue_sd_log(tx_fail_log)
                 break
 
         if all_rfm_ok:
             if not rfm_status_ok(rfm_was_ok):
-                sdmod.write_log(log_line(ts, "INFO", "RFM69", "RECONNECTED"))
+                queue_sd_log(log_line(ts, "INFO", "RFM69", "RECONNECTED"))
             if RFM_STATUS_EVERY_SAMPLES and sample_id % RFM_STATUS_EVERY_SAMPLES == 0:
-                print("{} [INFO] RFM69 TX_ACK_OK sample={} packets={}".format(ts, sample_id, len(rfm_packets)))
+                print("{} [INFO] RFM69 TX_OK sample={} packets={}".format(ts, sample_id, len(rfm_packets)))
             current_rfm_status = True
         else:
             if rfm_no_ack:
@@ -1220,7 +1365,7 @@ while True:
                 current_rfm_status = False
 
             if rfm_status_ok(rfm_was_ok):
-                sdmod.write_log(log_line(ts, "ERROR", "RFM69", rfm.last_error))
+                queue_sd_log(log_line(ts, "ERROR", "RFM69", rfm.last_error))
 
             if not rfm_no_ack and retry_due(last_rfm_reconnect_ms, RFM_RECONNECT_INTERVAL_MS):
                 rfm.reconnect()
@@ -1235,7 +1380,7 @@ while True:
             "bme": bme_data["ok"],
             "mpu": mpu_data["ok"],
             "mag": mag_data["ok"],
-            "sd": current_sd_ok,
+            "sd": current_sd_status,
             "gps": gps_led_state(gps_data),
             "rfm": current_rfm_status,
         }
@@ -1254,7 +1399,7 @@ while True:
         utime.sleep_ms(LED_MAIN_ERROR_RED_MS)
         mission_led._set(0, mission_led.OFF)
         mission_led.show()
-        sdmod.write_log(log_line("RTC_ERR", "ERROR", "MAIN", str(e)))
+        queue_sd_log(log_line("RTC_ERR", "ERROR", "MAIN", str(e)))
 
     elapsed_ms = utime.ticks_diff(utime.ticks_ms(), loop_start_ms)
     sleep_ms = LOOP_PERIOD_MS - elapsed_ms

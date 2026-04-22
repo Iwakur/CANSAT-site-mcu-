@@ -16,11 +16,11 @@ from rfm69 import RFM69
 # =========================
 
 # WiFi / HTTP forwarding
-WIFI_SSID = "A26"
-WIFI_PASSWORD = "1234567890g"
-SERVER_URL = "http://10.150.65.230/GitHub/CANSAT/Site/api/receive.php"
-HTTP_SEND_ENABLED = False
-HTTP_LOG_SEND_ENABLED = False
+WIFI_SSID = "Proximus-Home-01E0"
+WIFI_PASSWORD = "wyyf9j26shyac"
+SERVER_URL = "http://192.168.1.14/GitHub/CANSAT/Site/api/receive.php"
+HTTP_SEND_ENABLED = True
+HTTP_LOG_SEND_ENABLED = True
 WIFI_RECONNECT_INTERVAL_MS = 5000
 
 # SD card SPI
@@ -1028,3 +1028,4 @@ while True:
         log_status("ERROR", "MAIN", str(e))
 
     utime.sleep_ms(LOOP_DELAY_MS)
+
