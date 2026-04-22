@@ -1,4 +1,4 @@
-from machine import Pin
+from machine import Pin, SPI
 import socket
 import utime
 
@@ -16,23 +16,25 @@ from rfm69 import RFM69
 # =========================
 
 # WiFi / HTTP forwarding
-WIFI_SSID = "Proximus-Home-01E0"
-WIFI_PASSWORD = "wyyf9j26shyac"
-SERVER_URL = "http://192.168.1.14/GitHub/CANSAT/Site/api/receive.php"
-HTTP_SEND_ENABLED = True
-HTTP_LOG_SEND_ENABLED = True
+WIFI_SSID = "A26"
+WIFI_PASSWORD = "1234567890g"
+SERVER_URL = "http://10.150.65.230/GitHub/CANSAT/Site/api/receive.php"
+HTTP_SEND_ENABLED = False
+HTTP_LOG_SEND_ENABLED = False
 WIFI_RECONNECT_INTERVAL_MS = 5000
 
 # SD card SPI
-SD_SCK_PIN = 3
-SD_MOSI_PIN = 2
+SD_SCK_PIN = 2
+SD_MOSI_PIN = 3
 SD_MISO_PIN = 4
 SD_CS_PIN = 16
 SD_BAUDRATE = 500000
 SD_MOUNT_POINT = "/sd"
 SD_DATA_FILENAME = "ground_data.txt"
 SD_LOG_FILENAME = "ground_logs.txt"
-SD_RECONNECT_INTERVAL_MS = 3000
+SD_WRITE_ENABLED = False
+SD_RECONNECT_ENABLED = False
+SD_RECONNECT_INTERVAL_MS = 1000
 
 # RFM69
 RFM_SCK_PIN = SD_SCK_PIN
@@ -40,12 +42,21 @@ RFM_MOSI_PIN = SD_MOSI_PIN
 RFM_MISO_PIN = SD_MISO_PIN
 RFM_CS_PIN = 14
 RFM_RST_PIN = 15
-RFM_FREQ_MHZ = 434.0
-RFM_BITRATE = 4800
-RFM_TX_POWER_DBM = 13
+RFM_SPI_ID = 0
+RFM_SPI_BAUDRATE = 50000
+RFM_FREQ_MHZ = 433.1
+RFM_BITRATE = 9600
+RFM_FREQ_DEVIATION = 19000
+RFM_RX_BW_REG = 0x43
+RFM_AFC_BW_REG = 0x42
+RFM_PREAMBLE_LENGTH = 8
+RFM_TX_POWER_DBM = 17
+RFM_NODE_ID = 0xA6
+RFM_DESTINATION_ID = 0xCA
+RFM_ENCRYPTION_KEY = b"CANSAT2026RFM69!"
 
 # Main loop
-RFM_RECEIVE_TIMEOUT_MS = 120
+RFM_RECEIVE_TIMEOUT_MS = 1000
 RFM_RECONNECT_INTERVAL_MS = 3000
 NO_PACKET_LOG_INTERVAL_MS = 3000
 DEBUG_RFM = True
@@ -127,6 +138,145 @@ def blink_message_led():
         message_led.off()
     except Exception:
         pass
+
+
+class GroundRFM69:
+    REG_VERSION = 0x10
+    REG_OPMODE = 0x01
+    REG_IRQFLAGS1 = 0x27
+    REG_IRQFLAGS2 = 0x28
+    EXPECTED_VERSION = 0x24
+
+    def __init__(
+        self,
+        sck_pin,
+        mosi_pin,
+        miso_pin,
+        cs_pin,
+        rst_pin,
+        spi_id,
+        spi_baudrate,
+        frequency_mhz,
+        bitrate,
+        frequency_deviation,
+        rx_bw_reg,
+        afc_bw_reg,
+        preamble_length,
+        tx_power_dbm,
+        node_id,
+        destination_id,
+        encryption_key,
+    ):
+        self.sck_pin = sck_pin
+        self.mosi_pin = mosi_pin
+        self.miso_pin = miso_pin
+        self.cs_pin = cs_pin
+        self.rst_pin = rst_pin
+        self.spi_id = spi_id
+        self.spi_baudrate = spi_baudrate
+        self.frequency_mhz = frequency_mhz
+        self.bitrate = bitrate
+        self.frequency_deviation = frequency_deviation
+        self.rx_bw_reg = rx_bw_reg
+        self.afc_bw_reg = afc_bw_reg
+        self.preamble_length = preamble_length
+        self.tx_power_dbm = tx_power_dbm
+        self.node_id = node_id
+        self.destination_id = destination_id
+        self.encryption_key = encryption_key
+        self.spi = None
+        self.nss = None
+        self.reset_pin = None
+        self.radio = None
+        self.ok = False
+        self.last_error = None
+        self.reconnect()
+
+    def reconnect(self):
+        self.ok = False
+        self.last_error = None
+
+        try:
+            self.spi = SPI(
+                self.spi_id,
+                baudrate=self.spi_baudrate,
+                polarity=0,
+                phase=0,
+                firstbit=SPI.MSB,
+                sck=Pin(self.sck_pin),
+                mosi=Pin(self.mosi_pin),
+                miso=Pin(self.miso_pin)
+            )
+            self.nss = Pin(self.cs_pin, Pin.OUT, value=True)
+            self.reset_pin = Pin(self.rst_pin, Pin.OUT, value=False)
+
+            radio = RFM69(spi=self.spi, nss=self.nss, reset=self.reset_pin)
+            radio.frequency_mhz = self.frequency_mhz
+            radio.bitrate = self.bitrate
+            radio.frequency_deviation = self.frequency_deviation
+            radio.preamble_length = self.preamble_length
+            radio.spi_write(0x19, self.rx_bw_reg)
+            radio.spi_write(0x1A, self.afc_bw_reg)
+            radio.encryption_key = self.encryption_key
+            radio.tx_power = self.tx_power_dbm
+            radio.node = self.node_id
+            radio.destination = self.destination_id
+
+            version = radio.spi_read(self.REG_VERSION)
+            if version != self.EXPECTED_VERSION:
+                raise OSError("rfm bad version 0x{:02X}".format(version))
+
+            self.radio = radio
+            self.ok = True
+            return True
+
+        except Exception as e:
+            self.radio = None
+            self.ok = False
+            self.last_error = str(e)
+            return False
+
+    def receive_line(self, timeout_ms=500):
+        try:
+            if not self.ok:
+                if not self.reconnect():
+                    return None
+
+            packet = self.radio.receive(with_ack=True, timeout=timeout_ms / 1000)
+            if packet is None:
+                self.ok = True
+                self.last_error = None
+                return None
+
+            self.ok = True
+            self.last_error = None
+            return str(packet, "utf-8")
+
+        except Exception as e:
+            self.ok = False
+            self.last_error = str(e)
+            return None
+
+    def debug_status(self):
+        try:
+            if self.radio is None:
+                raise OSError(self.last_error or "not initialized")
+
+            version = self.radio.spi_read(self.REG_VERSION)
+            return {
+                "ok": True,
+                "version": version,
+                "opmode": self.radio.spi_read(self.REG_OPMODE),
+                "irq1": self.radio.spi_read(self.REG_IRQFLAGS1),
+                "irq2": self.radio.spi_read(self.REG_IRQFLAGS2),
+                "version_ok": version == self.EXPECTED_VERSION,
+            }
+
+        except Exception as e:
+            return {
+                "ok": False,
+                "error": str(e),
+            }
 
 
 # =========================
@@ -509,6 +659,11 @@ def init_sd():
     global sdmod
 
     try:
+        if not SD_WRITE_ENABLED:
+            sdmod = None
+            log_status("INFO", "SD", "WRITE_DISABLED")
+            return False
+
         log_status("INFO", "SD", "CONNECTING CS=GP{} DATA={}".format(SD_CS_PIN, SD_DATA_FILENAME))
         sdmod = SDModule(
             sck_pin=SD_SCK_PIN,
@@ -538,6 +693,9 @@ def ensure_sd():
     global sdmod
 
     try:
+        if not SD_WRITE_ENABLED or not SD_RECONNECT_ENABLED:
+            return False
+
         if sdmod is None:
             return init_sd()
 
@@ -561,7 +719,10 @@ def write_sd_data(line):
     global sdmod
 
     try:
-        if not ensure_sd():
+        if not SD_WRITE_ENABLED:
+            return False
+
+        if sdmod is None or not sdmod.ok:
             return False
 
         if sdmod.write_data(line):
@@ -591,15 +752,24 @@ def init_rfm():
             RFM_RST_PIN,
             RFM_FREQ_MHZ
         ))
-        rfm = RFM69(
+        rfm = GroundRFM69(
             sck_pin=RFM_SCK_PIN,
             mosi_pin=RFM_MOSI_PIN,
             miso_pin=RFM_MISO_PIN,
             cs_pin=RFM_CS_PIN,
             rst_pin=RFM_RST_PIN,
+            spi_id=RFM_SPI_ID,
+            spi_baudrate=RFM_SPI_BAUDRATE,
             frequency_mhz=RFM_FREQ_MHZ,
             bitrate=RFM_BITRATE,
-            tx_power_dbm=RFM_TX_POWER_DBM
+            frequency_deviation=RFM_FREQ_DEVIATION,
+            rx_bw_reg=RFM_RX_BW_REG,
+            afc_bw_reg=RFM_AFC_BW_REG,
+            preamble_length=RFM_PREAMBLE_LENGTH,
+            tx_power_dbm=RFM_TX_POWER_DBM,
+            node_id=RFM_NODE_ID,
+            destination_id=RFM_DESTINATION_ID,
+            encryption_key=RFM_ENCRYPTION_KEY
         )
 
         if rfm.ok:
@@ -656,14 +826,21 @@ init_sd()
 connect_wifi()
 init_rfm()
 
-log_status("INFO", "RFM69", "CONFIG SCK=GP{} MOSI=GP{} MISO=GP{} CS=GP{} RST=GP{} FREQ={}MHz BITRATE={}".format(
+log_status("INFO", "RFM69", "CONFIG SCK=GP{} MOSI=GP{} MISO=GP{} CS=GP{} RST=GP{} FREQ={}MHz BITRATE={} FDEV={} RXBW=0x{:02X} AFCBW=0x{:02X} PREAMBLE={} TX_POWER={}dBm NODE=0x{:02X} DEST=0x{:02X} AES=ON".format(
     RFM_SCK_PIN,
     RFM_MOSI_PIN,
     RFM_MISO_PIN,
     RFM_CS_PIN,
     RFM_RST_PIN,
     RFM_FREQ_MHZ,
-    RFM_BITRATE
+    RFM_BITRATE,
+    RFM_FREQ_DEVIATION,
+    RFM_RX_BW_REG,
+    RFM_AFC_BW_REG,
+    RFM_PREAMBLE_LENGTH,
+    RFM_TX_POWER_DBM,
+    RFM_NODE_ID,
+    RFM_DESTINATION_ID
 ))
 
 log_status("INFO", "SD", "CONFIG SCK=GP{} MOSI=GP{} MISO=GP{} CS=GP{} DATA={} LOG={}".format(
@@ -712,7 +889,9 @@ while True:
     try:
         current_sd_ok = sdmod is not None and sdmod.ok
 
-        if current_sd_ok:
+        if not SD_WRITE_ENABLED:
+            sd_was_ok = False
+        elif current_sd_ok:
             if not sd_was_ok:
                 log_status("INFO", "SD", "RECONNECTED DATA={}".format(SD_DATA_FILENAME))
             sd_was_ok = True
@@ -722,7 +901,7 @@ while True:
                 log_status("WARN", "SD", "DISCONNECTED {}".format(last_error))
             sd_was_ok = False
 
-            if utime.ticks_diff(utime.ticks_ms(), last_sd_reconnect_ms) >= SD_RECONNECT_INTERVAL_MS:
+            if SD_RECONNECT_ENABLED and utime.ticks_diff(utime.ticks_ms(), last_sd_reconnect_ms) >= SD_RECONNECT_INTERVAL_MS:
                 ensure_sd()
                 last_sd_reconnect_ms = utime.ticks_ms()
 

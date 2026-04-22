@@ -56,6 +56,7 @@ SD_MOSI_PIN = 3
 SD_MISO_PIN = 4
 SD_CS_PIN = 5
 SD_BAUDRATE = 500000
+SD_WRITE_ENABLED = False
 
 # LED modules
 MISSION_LED_PIN = 10
@@ -79,12 +80,21 @@ RFM_CS_PIN = 6
 RFM_RST_PIN = 7
 RFM_SPI_ID = 0
 RFM_SPI_BAUDRATE = 50000
-RFM_FREQ_MHZ = 434.0
-RFM_BITRATE = 4800
-RFM_FREQ_DEVIATION = 90000
+RFM_FREQ_MHZ = 433.1
+RFM_BITRATE = 9600
+RFM_FREQ_DEVIATION = 19000
+RFM_RX_BW_REG = 0x43
+RFM_AFC_BW_REG = 0x42
+RFM_PREAMBLE_LENGTH = 8
 RFM_TX_POWER_DBM = 13
+RFM_NODE_ID = 0xCA
+RFM_DESTINATION_ID = 0xA6
+RFM_ACK_TIMEOUT_MS = 350
+RFM_ACK_RETRIES = 2
+RFM_ENCRYPTION_KEY = b"CANSAT2026RFM69!"
 RFM_MAX_PAYLOAD_BYTES = 60
 RFM_LOG_EVERY_SEND = False
+RFM_ACK_BLUE_BLINK_MS = 40
 DEBUG_TELEMETRY = True
 DEBUG_TELEMETRY_EVERY_SAMPLES = 1
 RFM_STATUS_EVERY_SAMPLES = 1
@@ -135,7 +145,15 @@ class CompatibleRFM69:
         frequency_mhz,
         bitrate,
         frequency_deviation,
+        rx_bw_reg,
+        afc_bw_reg,
+        preamble_length,
         tx_power_dbm,
+        node_id,
+        destination_id,
+        ack_timeout_ms,
+        ack_retries,
+        encryption_key,
     ):
         self.sck_pin = sck_pin
         self.mosi_pin = mosi_pin
@@ -147,7 +165,15 @@ class CompatibleRFM69:
         self.frequency_mhz = frequency_mhz
         self.bitrate = bitrate
         self.frequency_deviation = frequency_deviation
+        self.rx_bw_reg = rx_bw_reg
+        self.afc_bw_reg = afc_bw_reg
+        self.preamble_length = preamble_length
         self.tx_power_dbm = tx_power_dbm
+        self.node_id = node_id
+        self.destination_id = destination_id
+        self.ack_timeout_ms = ack_timeout_ms
+        self.ack_retries = ack_retries
+        self.encryption_key = encryption_key
         self.radio = None
         self.spi = None
         self.nss = None
@@ -163,57 +189,41 @@ class CompatibleRFM69:
 
         try:
             try:
-                radio = RFM69(
-                    sck_pin=self.sck_pin,
-                    mosi_pin=self.mosi_pin,
-                    miso_pin=self.miso_pin,
-                    cs_pin=self.cs_pin,
-                    rst_pin=self.rst_pin,
-                    frequency_mhz=self.frequency_mhz,
-                    bitrate=self.bitrate,
-                    tx_power_dbm=self.tx_power_dbm
-                )
-                self.native_send_line = hasattr(radio, "send_line")
-            except TypeError as e:
-                if "sck_pin" not in str(e):
-                    raise
+                Pin(SD_CS_PIN, Pin.OUT, value=1)
+                Pin(self.cs_pin, Pin.OUT, value=1)
+            except Exception:
+                pass
 
-                self.spi = SPI(
-                    self.spi_id,
-                    baudrate=self.spi_baudrate,
-                    polarity=0,
-                    phase=0,
-                    firstbit=SPI.MSB,
-                    sck=Pin(self.sck_pin),
-                    mosi=Pin(self.mosi_pin),
-                    miso=Pin(self.miso_pin)
-                )
-                self.nss = Pin(self.cs_pin, Pin.OUT, value=True)
-                if self.rst_pin is None:
-                    self.reset_pin = None
-                else:
-                    self.reset_pin = Pin(self.rst_pin, Pin.OUT, value=False)
+            self.spi = SPI(
+                self.spi_id,
+                baudrate=self.spi_baudrate,
+                polarity=0,
+                phase=0,
+                firstbit=SPI.MSB,
+                sck=Pin(self.sck_pin),
+                mosi=Pin(self.mosi_pin),
+                miso=Pin(self.miso_pin)
+            )
+            self.nss = Pin(self.cs_pin, Pin.OUT, value=True)
+            if self.rst_pin is None:
+                self.reset_pin = None
+            else:
+                self.reset_pin = Pin(self.rst_pin, Pin.OUT, value=False)
 
-                radio = RFM69(spi=self.spi, nss=self.nss, reset=self.reset_pin)
-                if hasattr(radio, "spi_write"):
-                    radio.spi_write(0x02, 0x00)
-                radio.frequency_mhz = self.frequency_mhz
-                radio.bitrate = self.bitrate
-                if hasattr(radio, "frequency_deviation"):
-                    radio.frequency_deviation = self.frequency_deviation
-                if hasattr(type(radio), "preamble_length"):
-                    radio.preamble_length = 3
-                if hasattr(type(radio), "packet_format"):
-                    radio.packet_format = 1
-                if hasattr(type(radio), "dc_free"):
-                    radio.dc_free = 0
-                if hasattr(type(radio), "crc_on"):
-                    radio.crc_on = 1
-                if hasattr(type(radio), "aes_on"):
-                    radio.aes_on = 0
-                if hasattr(radio, "tx_power"):
-                    radio.tx_power = self.tx_power_dbm
-                self.native_send_line = False
+            radio = RFM69(spi=self.spi, nss=self.nss, reset=self.reset_pin)
+            radio.frequency_mhz = self.frequency_mhz
+            radio.bitrate = self.bitrate
+            radio.frequency_deviation = self.frequency_deviation
+            radio.preamble_length = self.preamble_length
+            radio.spi_write(0x19, self.rx_bw_reg)
+            radio.spi_write(0x1A, self.afc_bw_reg)
+            radio.encryption_key = self.encryption_key
+            radio.tx_power = self.tx_power_dbm
+            radio.node = self.node_id
+            radio.destination = self.destination_id
+            radio.ack_wait = self.ack_timeout_ms / 1000
+            radio.ack_retries = self.ack_retries
+            self.native_send_line = False
 
             self.radio = radio
             version = self._read_version()
@@ -252,40 +262,33 @@ class CompatibleRFM69:
                 if not self.reconnect():
                     return False
 
-            if self.native_send_line:
-                result = self.radio.send_line(text)
-                self.ok = getattr(self.radio, "ok", bool(result))
-                self.last_error = getattr(self.radio, "last_error", None)
-                return result
+            try:
+                Pin(SD_CS_PIN, Pin.OUT, value=1)
+                self.nss.high()
+            except Exception:
+                pass
 
             payload = text.encode("utf-8")
             if len(payload) > RFM_MAX_PAYLOAD_BYTES:
                 payload = payload[:RFM_MAX_PAYLOAD_BYTES]
 
-            self._set_mode(self.MODE_STDBY)
-            self._read_reg(self.REG_IRQFLAGS1)
-            self._read_reg(self.REG_IRQFLAGS2)
-            self.radio.spi_write_fifo(payload)
-            self._set_mode(self.MODE_TX)
-
-            start = utime.ticks_ms()
-            while True:
-                if self._read_reg(self.REG_IRQFLAGS2) & 0x08:
-                    break
-                if utime.ticks_diff(utime.ticks_ms(), start) > 500:
-                    raise OSError("rfm tx timeout")
-                utime.sleep_ms(5)
-
-            self._set_mode(self.MODE_STDBY)
             self.ok = True
-            self.last_error = None
-            return True
+            if self.radio.send_with_ack(payload):
+                self.last_error = None
+                return True
+
+            self.last_error = "NO_ACK id={}".format(self.radio.identifier)
+            return False
 
         except Exception as e:
             self.ok = False
             self.last_error = str(e)
             try:
                 self._set_mode(self.MODE_STDBY)
+            except Exception:
+                pass
+            try:
+                self.reconnect()
             except Exception:
                 pass
             return False
@@ -447,6 +450,28 @@ def bool_status_color(ok):
     return module_leds.GREEN if ok else module_leds.RED
 
 
+def rfm_status_color(status):
+    if status == "no_ack":
+        return module_leds.ORANGE
+    return module_leds.GREEN if status else module_leds.RED
+
+
+def rfm_status_ok(status):
+    return status is True or status == "ok"
+
+
+def is_no_ack_error(error_text):
+    return str(error_text).startswith("NO_ACK")
+
+
+def blink_rfm_ack():
+    module_leds._set(MODULE_RFM, module_leds.BLUE)
+    module_leds.show()
+    utime.sleep_ms(RFM_ACK_BLUE_BLINK_MS)
+    module_leds._set(MODULE_RFM, module_leds.GREEN)
+    module_leds.show()
+
+
 def gps_status_color(gps_state):
     if gps_state == "fix":
         return module_leds.GREEN
@@ -458,9 +483,12 @@ def gps_status_color(gps_state):
 def mission_health_level(status_map):
     module_failures = 0
 
-    for key in ("rtc", "tmp36", "bme", "mpu", "mag", "sd", "rfm"):
+    for key in ("rtc", "tmp36", "bme", "mpu", "mag", "sd"):
         if not status_map.get(key):
             module_failures += 1
+
+    if not rfm_status_ok(status_map.get("rfm")):
+        module_failures += 1
 
     if status_map.get("gps") != "fix":
         module_failures += 1
@@ -468,7 +496,7 @@ def mission_health_level(status_map):
     if module_failures >= 3:
         return "critical"
 
-    if not status_map.get("rfm"):
+    if not rfm_status_ok(status_map.get("rfm")):
         return "warning"
 
     if module_failures == 0:
@@ -485,7 +513,7 @@ def update_module_leds(status_map):
     module_leds._set(MODULE_MAG, bool_status_color(status_map["mag"]))
     module_leds._set(MODULE_GPS, gps_status_color(status_map["gps"]))
     module_leds._set(MODULE_SD, bool_status_color(status_map["sd"]))
-    module_leds._set(MODULE_RFM, bool_status_color(status_map["rfm"]))
+    module_leds._set(MODULE_RFM, rfm_status_color(status_map["rfm"]))
     module_leds.show()
 
 
@@ -845,26 +873,31 @@ Pin(RFM_CS_PIN, Pin.OUT, value=1)
 # =========================
 # INIT SD MODULE
 # =========================
-sdmod = StartupModule(
-    "SD",
-    lambda: SDModule(
-        sck_pin=SD_SCK_PIN,
-        mosi_pin=SD_MOSI_PIN,
-        miso_pin=SD_MISO_PIN,
-        cs_pin=SD_CS_PIN,
-        baudrate=SD_BAUDRATE,
-        mount_point="/sd",
-        data_filename="data.txt",
-        log_filename="logs.txt"
-    ),
-    lambda error_text: {"ok": False, "error": error_text}
-)
-
-if sdmod.ok:
-    print("SD CARD READY")
+if SD_WRITE_ENABLED:
+    sdmod = StartupModule(
+        "SD",
+        lambda: SDModule(
+            sck_pin=SD_SCK_PIN,
+            mosi_pin=SD_MOSI_PIN,
+            miso_pin=SD_MISO_PIN,
+            cs_pin=SD_CS_PIN,
+            baudrate=SD_BAUDRATE,
+            mount_point="/sd",
+            data_filename="data.txt",
+            log_filename="logs.txt"
+        ),
+        lambda error_text: {"ok": False, "error": error_text}
+    )
 else:
-    print("SD CARD NOT READY:", sdmod.last_error)
-    sdmod = NullSDModule(sdmod.last_error)
+    sdmod = NullSDModule("sd write disabled")
+    print("SD WRITE DISABLED")
+
+if SD_WRITE_ENABLED:
+    if sdmod.ok:
+        print("SD CARD READY")
+    else:
+        print("SD CARD NOT READY:", sdmod.last_error)
+        sdmod = NullSDModule(sdmod.last_error)
 
 
 # =========================
@@ -883,7 +916,15 @@ rfm = StartupModule(
         frequency_mhz=RFM_FREQ_MHZ,
         bitrate=RFM_BITRATE,
         frequency_deviation=RFM_FREQ_DEVIATION,
-        tx_power_dbm=RFM_TX_POWER_DBM
+        rx_bw_reg=RFM_RX_BW_REG,
+        afc_bw_reg=RFM_AFC_BW_REG,
+        preamble_length=RFM_PREAMBLE_LENGTH,
+        tx_power_dbm=RFM_TX_POWER_DBM,
+        node_id=RFM_NODE_ID,
+        destination_id=RFM_DESTINATION_ID,
+        ack_timeout_ms=RFM_ACK_TIMEOUT_MS,
+        ack_retries=RFM_ACK_RETRIES,
+        encryption_key=RFM_ENCRYPTION_KEY
     ),
     lambda error_text: {"ok": False, "error": error_text}
 )
@@ -893,7 +934,7 @@ if rfm.ok:
 else:
     print("RFM69 NOT READY:", rfm.last_error)
 
-print("CANSAT RFM CONFIG: SCK=GP{} MOSI=GP{} MISO=GP{} CS=GP{} RST=GP{} FREQ={}MHz BITRATE={} FDEV={} TX_POWER={}dBm".format(
+print("CANSAT RFM CONFIG: SCK=GP{} MOSI=GP{} MISO=GP{} CS=GP{} RST=GP{} FREQ={}MHz BITRATE={} FDEV={} RXBW=0x{:02X} AFCBW=0x{:02X} PREAMBLE={} TX_POWER={}dBm NODE=0x{:02X} DEST=0x{:02X} ACK={}ms RETRIES={} AES=ON".format(
     RFM_SCK_PIN,
     RFM_MOSI_PIN,
     RFM_MISO_PIN,
@@ -902,14 +943,21 @@ print("CANSAT RFM CONFIG: SCK=GP{} MOSI=GP{} MISO=GP{} CS=GP{} RST=GP{} FREQ={}M
     RFM_FREQ_MHZ,
     RFM_BITRATE,
     RFM_FREQ_DEVIATION,
-    RFM_TX_POWER_DBM
+    RFM_RX_BW_REG,
+    RFM_AFC_BW_REG,
+    RFM_PREAMBLE_LENGTH,
+    RFM_TX_POWER_DBM,
+    RFM_NODE_ID,
+    RFM_DESTINATION_ID,
+    RFM_ACK_TIMEOUT_MS,
+    RFM_ACK_RETRIES
 ))
 
 sdmod.write_log(log_line(
     now_text(rtc_test),
     "INFO",
     "RFM69",
-    "CONFIG SCK=GP{} MOSI=GP{} MISO=GP{} CS=GP{} RST=GP{} FREQ={}MHz BITRATE={} FDEV={} TX_POWER={}dBm".format(
+    "CONFIG SCK=GP{} MOSI=GP{} MISO=GP{} CS=GP{} RST=GP{} FREQ={}MHz BITRATE={} FDEV={} RXBW=0x{:02X} AFCBW=0x{:02X} PREAMBLE={} TX_POWER={}dBm NODE=0x{:02X} DEST=0x{:02X} ACK={}ms RETRIES={} AES=ON".format(
         RFM_SCK_PIN,
         RFM_MOSI_PIN,
         RFM_MISO_PIN,
@@ -918,7 +966,14 @@ sdmod.write_log(log_line(
         RFM_FREQ_MHZ,
         RFM_BITRATE,
         RFM_FREQ_DEVIATION,
-        RFM_TX_POWER_DBM
+        RFM_RX_BW_REG,
+        RFM_AFC_BW_REG,
+        RFM_PREAMBLE_LENGTH,
+        RFM_TX_POWER_DBM,
+        RFM_NODE_ID,
+        RFM_DESTINATION_ID,
+        RFM_ACK_TIMEOUT_MS,
+        RFM_ACK_RETRIES
     )
 ))
 
@@ -1118,8 +1173,9 @@ while True:
         sd_was_ok = current_sd_ok
 
         # ---------- RFM SEND ----------
-        current_rfm_ok = rfm_was_ok
+        current_rfm_status = rfm_was_ok
         all_rfm_ok = True
+        rfm_no_ack = False
 
         for packet in rfm_packets:
             rfm_tx_line = fit_rfm_payload(packet)
@@ -1132,37 +1188,45 @@ while True:
             rfm_ok = rfm.send_line(rfm_tx_line)
 
             if rfm_ok:
+                blink_rfm_ack()
                 if RFM_LOG_EVERY_SEND:
-                    tx_ok_log = log_line(ts, "INFO", "RFM69", "TX_OK {}".format(rfm_tx_line))
+                    tx_ok_log = log_line(ts, "INFO", "RFM69", "TX_ACK_OK {}".format(rfm_tx_line))
                     print(tx_ok_log)
                     sdmod.write_log(tx_ok_log)
             else:
                 all_rfm_ok = False
+                rfm_no_ack = is_no_ack_error(rfm.last_error)
+                error_label = "NO_ACK" if rfm_no_ack else "TX_FAIL"
                 tx_fail_log = log_line(
                     ts,
                     "ERROR",
                     "RFM69",
-                    "TX_FAIL {} ERROR={}".format(rfm_tx_line, rfm.last_error)
+                    "{} {} ERROR={}".format(error_label, rfm_tx_line, rfm.last_error)
                 )
                 print(tx_fail_log)
                 sdmod.write_log(tx_fail_log)
                 break
 
         if all_rfm_ok:
-            if not rfm_was_ok:
+            if not rfm_status_ok(rfm_was_ok):
                 sdmod.write_log(log_line(ts, "INFO", "RFM69", "RECONNECTED"))
             if RFM_STATUS_EVERY_SAMPLES and sample_id % RFM_STATUS_EVERY_SAMPLES == 0:
-                print("{} [INFO] RFM69 TX_OK sample={} packets={}".format(ts, sample_id, len(rfm_packets)))
-            current_rfm_ok = True
+                print("{} [INFO] RFM69 TX_ACK_OK sample={} packets={}".format(ts, sample_id, len(rfm_packets)))
+            current_rfm_status = True
         else:
-            if rfm_was_ok:
+            if rfm_no_ack:
+                current_rfm_status = "no_ack"
+            else:
+                current_rfm_status = False
+
+            if rfm_status_ok(rfm_was_ok):
                 sdmod.write_log(log_line(ts, "ERROR", "RFM69", rfm.last_error))
-            if retry_due(last_rfm_reconnect_ms, RFM_RECONNECT_INTERVAL_MS):
+
+            if not rfm_no_ack and retry_due(last_rfm_reconnect_ms, RFM_RECONNECT_INTERVAL_MS):
                 rfm.reconnect()
                 last_rfm_reconnect_ms = utime.ticks_ms()
-            current_rfm_ok = False
 
-        rfm_was_ok = current_rfm_ok
+        rfm_was_ok = current_rfm_status
 
         # ---------- LED STATUS ----------
         status_map = {
@@ -1173,7 +1237,7 @@ while True:
             "mag": mag_data["ok"],
             "sd": current_sd_ok,
             "gps": gps_led_state(gps_data),
-            "rfm": current_rfm_ok,
+            "rfm": current_rfm_status,
         }
         if DEBUG_TELEMETRY and (
             not DEBUG_TELEMETRY_EVERY_SAMPLES
