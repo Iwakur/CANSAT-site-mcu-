@@ -385,6 +385,11 @@ button.danger {
   background: rgba(15, 18, 24, 0.74);
 }
 
+.summary-item a {
+  color: var(--accent);
+  overflow-wrap: anywhere;
+}
+
 .summary-label {
   display: block;
   overflow: hidden;

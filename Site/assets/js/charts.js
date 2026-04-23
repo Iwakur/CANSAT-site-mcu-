@@ -337,6 +337,15 @@ const CansatCharts = (() => {
     const gasValid = lastValue(rows, "bme_gas_valid");
     const gpsFix = lastValue(rows, "gps_fix");
     const satellites = lastValue(rows, "gps_satellites");
+    const gpsRow = rows.slice().reverse().find((row) => (
+      Number(row.gps_fix) && numericValue(row, "gps_lat") !== null && numericValue(row, "gps_lon") !== null
+    ));
+    const gpsLat = gpsRow ? numericValue(gpsRow, "gps_lat") : null;
+    const gpsLon = gpsRow ? numericValue(gpsRow, "gps_lon") : null;
+    const location = gpsLat === null || gpsLon === null ? "--" : {
+      text: `${formatNumber(gpsLat, 6)}, ${formatNumber(gpsLon, 6)}`,
+      href: `https://www.google.com/maps?q=${gpsLat},${gpsLon}`
+    };
 
     return [
       ["Last received", timeOnly(meta.last_received_at || last.received_at) || "--"],
@@ -349,6 +358,7 @@ const CansatCharts = (() => {
       ["Sample gap est.", `${formatNumber(samples.percent, 2)}%`],
       ["GPS fix", gpsFix === null ? "--" : (Number(gpsFix) ? "Yes" : "No")],
       ["Satellites", satellites === null ? "--" : formatNumber(satellites, 0)],
+      ["Last location", location],
       ["Gas valid", gasValid === null ? "--" : (Number(gasValid) ? "Yes" : "No")],
       ["Parse errors", parseErrors.toLocaleString()]
     ];
@@ -372,7 +382,16 @@ const CansatCharts = (() => {
       labelElement.textContent = label;
 
       const valueElement = document.createElement("strong");
-      valueElement.textContent = value;
+      if (value && typeof value === "object") {
+        const link = document.createElement("a");
+        link.href = value.href;
+        link.target = "_blank";
+        link.rel = "noopener";
+        link.textContent = value.text;
+        valueElement.appendChild(link);
+      } else {
+        valueElement.textContent = value;
+      }
 
       item.append(labelElement, valueElement);
       element.appendChild(item);
