@@ -1,4 +1,5 @@
 from machine import Pin, I2C, SPI
+import os
 import utime
 
 from rtc import DS1302
@@ -62,9 +63,15 @@ SD_WRITE_ENABLED = False
 SD_RECONNECT_INTERVAL_MS = 10000
 SD_FLUSH_EVERY_SAMPLES = 5
 
-# LED modules
-MISSION_LED_PIN = 9
-MODULE_LED_PIN = 10
+# Onboard flash packet log
+FLASH_LOG_ENABLED = True
+FLASH_LOG_FILENAME = "log.txt"
+FLASH_LOG_RESET_ON_BOOT = True
+FLASH_LOG_MIN_FREE_MB = 0.15
+
+# LED modules a linvers
+MISSION_LED_PIN = 10   
+MODULE_LED_PIN = 9
 MODULE_LED_COUNT = 8
 
 MODULE_RTC = 0
@@ -154,6 +161,85 @@ def select_rfm_bus():
     release_sd_cs()
     release_rfm_cs()
     utime.sleep_us(50)
+
+
+flash_log_write_enabled = FLASH_LOG_ENABLED
+flash_log_last_error = None
+
+
+def flash_log_free_space_mb():
+    stat = os.statvfs("/")
+    block_size = stat[0]
+    free_blocks = stat[3]
+    free_bytes = block_size * free_blocks
+    return free_bytes / (1024 * 1024)
+
+
+def flash_log_print_free_space():
+    free_mb = flash_log_free_space_mb()
+    print("Free space: {:.2f} Mo".format(free_mb))
+    return free_mb
+
+
+def flash_log_boot_reset():
+    global flash_log_last_error
+
+    if not FLASH_LOG_ENABLED or not FLASH_LOG_RESET_ON_BOOT:
+        return True
+
+    try:
+        os.remove(FLASH_LOG_FILENAME)
+    except OSError:
+        pass
+    except Exception as e:
+        flash_log_last_error = str(e)
+        return False
+
+    flash_log_last_error = None
+    return True
+
+
+def flash_log_can_write():
+    global flash_log_write_enabled, flash_log_last_error
+
+    if not flash_log_write_enabled:
+        return False
+
+    try:
+        free_mb = flash_log_print_free_space()
+        if free_mb <= FLASH_LOG_MIN_FREE_MB:
+            flash_log_write_enabled = False
+            flash_log_last_error = "LOW_SPACE {:.2f} Mo".format(free_mb)
+            return False
+        return True
+    except Exception as e:
+        flash_log_last_error = str(e)
+        return False
+
+
+def flash_log_append_line(line):
+    global flash_log_write_enabled, flash_log_last_error
+
+    if not FLASH_LOG_ENABLED:
+        return False
+
+    if not flash_log_can_write():
+        return False
+
+    try:
+        with open(FLASH_LOG_FILENAME, "a") as f:
+            f.write(line + "\n")
+
+        flash_log_last_error = None
+        free_mb = flash_log_print_free_space()
+        if free_mb <= FLASH_LOG_MIN_FREE_MB:
+            flash_log_write_enabled = False
+            flash_log_last_error = "LOW_SPACE {:.2f} Mo".format(free_mb)
+        return True
+
+    except Exception as e:
+        flash_log_last_error = str(e)
+        return False
 
 
 class CompatibleRFM69:
@@ -506,6 +592,10 @@ def sd_status_color(status):
         return module_leds.ORANGE
     if status == "writing":
         return module_leds.BLUE
+    if status == "low_space":
+        return module_leds.ORANGE
+    if status == "saved":
+        return module_leds.GREEN
     return module_leds.GREEN if status else module_leds.RED
 
 
@@ -784,7 +874,7 @@ def run_startup_calibration():
 
     gps_ready = wait_for_gps_time_sync(done, failed)
 
-    if sdmod.ok:
+    if flash_log_write_enabled:
         done[MODULE_SD] = True
     else:
         failed[MODULE_SD] = True
@@ -828,6 +918,17 @@ i2c = I2C(
 )
 
 print("I2C devices:", [hex(x) for x in i2c.scan()])
+
+
+# =========================
+# INIT ONBOARD FLASH LOG
+# =========================
+if FLASH_LOG_ENABLED:
+    if flash_log_boot_reset():
+        print("FLASH LOG RESET:", FLASH_LOG_FILENAME)
+    else:
+        print("FLASH LOG RESET FAILED:", flash_log_last_error)
+    flash_log_print_free_space()
 
 
 # =========================
@@ -1071,7 +1172,7 @@ init_status_map = {
     "bme": bme_test["ok"],
     "mpu": mpu_test["ok"],
     "mag": mag_test["ok"],
-    "sd": sdmod.ok,
+    "sd": flash_log_write_enabled,
     "gps": gps_led_state(gps_test),
     "rfm": rfm.ok,
 }
@@ -1088,7 +1189,7 @@ tmp36_was_ok = tmp36_test["ok"]
 mag_was_ok = mag_test["ok"]
 gps_was_ok = gps_test["ok"]
 gps_had_fix = gps_test["fix"] if gps_test["ok"] else False
-sd_was_ok = sdmod.ok
+sd_was_ok = flash_log_write_enabled
 rfm_was_ok = rfm.ok
 sample_id = 0
 gps_time_synced_for_connection = gps_test.get("rtc_synced", False)
@@ -1305,24 +1406,11 @@ while True:
             gps_fix_packet_sent_for_connection = True
 
         rfm_packets = build_rfm_packets(sample_id, telemetry_line, ts, tmp36_data, bme_data, mpu_data, mag_data, gps_data)
-        if SD_WRITE_ENABLED:
-            current_sd_status = "writing" if sdmod.ok else False
-            module_leds._set(MODULE_SD, module_leds.BLUE if sdmod.ok else module_leds.RED)
-            module_leds.show()
-            data_ok = False
-            if sdmod.ok:
-                select_sd_bus()
-                try:
-                    data_ok = sdmod.write_data(telemetry_line)
-                finally:
-                    try:
-                        sdmod.release_bus()
-                    except Exception:
-                        pass
-                    rfm_spi_restore_needed = True
-                    restore_rfm_bus()
-            current_sd_status = True if data_ok else False
-            sd_was_ok = current_sd_status
+        if FLASH_LOG_ENABLED:
+            if not flash_log_write_enabled:
+                current_sd_status = "low_space" if flash_log_last_error and str(flash_log_last_error).startswith("LOW_SPACE") else False
+            else:
+                current_sd_status = True
         else:
             current_sd_status = False
 
@@ -1367,6 +1455,19 @@ while True:
                 utime.sleep_ms(RFM_PACKET_GAP_MS)
 
         if all_rfm_ok:
+            if FLASH_LOG_ENABLED:
+                module_leds._set(MODULE_SD, module_leds.BLUE if flash_log_write_enabled else module_leds.ORANGE)
+                module_leds.show()
+                if flash_log_append_line(telemetry_line):
+                    current_sd_status = "saved"
+                    sd_was_ok = True
+                else:
+                    if flash_log_last_error and str(flash_log_last_error).startswith("LOW_SPACE"):
+                        current_sd_status = "low_space"
+                    else:
+                        current_sd_status = False
+                    sd_was_ok = False
+
             if not rfm_status_ok(rfm_was_ok):
                 queue_sd_log(log_line(ts, "INFO", "RFM69", "RECONNECTED"))
             if RFM_STATUS_EVERY_SAMPLES and sample_id % RFM_STATUS_EVERY_SAMPLES == 0:
