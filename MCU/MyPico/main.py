@@ -106,6 +106,7 @@ RFM_STATUS_EVERY_SAMPLES = 1
 
 # Main loop
 LOOP_PERIOD_MS = 3000
+GREEN_LED_OFF_AFTER_SAMPLES = 100
 SENSOR_RECONNECT_INTERVAL_MS = 30000
 RFM_RECONNECT_INTERVAL_MS = 10000
 
@@ -566,7 +567,7 @@ def mission_health_level(status_map):
     return "warning"
 
 
-def update_module_leds(status_map):
+def update_module_leds(status_map, sample_id):
     module_leds._set(MODULE_RTC, bool_status_color(status_map["rtc"]))
     module_leds._set(MODULE_TMP36, bool_status_color(status_map["tmp36"]))
     module_leds._set(MODULE_BME, bool_status_color(status_map["bme"]))
@@ -575,6 +576,12 @@ def update_module_leds(status_map):
     module_leds._set(MODULE_GPS, gps_status_color(status_map["gps"]))
     module_leds._set(MODULE_SD, sd_status_color(status_map["sd"]))
     module_leds._set(MODULE_RFM, rfm_status_color(status_map["rfm"]))
+
+    if sample_id >= GREEN_LED_OFF_AFTER_SAMPLES:
+        for index in range(MODULE_LED_COUNT):
+            if module_leds.np[index] == module_leds.GREEN:
+                module_leds._set(index, module_leds.OFF)
+
     module_leds.show()
 
 
@@ -589,12 +596,15 @@ def update_mission_led(status_map, sample_id):
     else:
         color = mission_led.GREEN
 
+    if sample_id >= GREEN_LED_OFF_AFTER_SAMPLES and color == mission_led.GREEN:
+        color = mission_led.OFF
+
     mission_led._set(0, color if pulse_on else mission_led.OFF)
     mission_led.show()
 
 
 def update_status_leds(status_map, sample_id):
-    update_module_leds(status_map)
+    update_module_leds(status_map, sample_id)
     update_mission_led(status_map, sample_id)
 
 
