@@ -35,6 +35,8 @@ class GY271:
 
     def _check_address(self, address):
         try:
+            if hasattr(self.i2c, "scan"):
+                return address in self.i2c.scan()
             self.i2c.writeto(address, b"")
             return True
         except OSError:

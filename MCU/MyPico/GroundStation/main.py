@@ -16,9 +16,9 @@ from rfm69 import RFM69
 # =========================
 
 # WiFi / HTTP forwarding
-WIFI_SSID = "Proximus-Home-01E0"
-WIFI_PASSWORD = "wyyf9j26shyac"
-SERVER_URL = "http://192.168.1.14/GitHub/CANSAT/Site/api/receive.php"
+WIFI_SSID = "A26"  #TP-Link_7AA4_5G
+WIFI_PASSWORD = "1234567890g"     #87102048
+SERVER_URL = "http://10.150.65.230/GitHub/CANSAT/Site/api/receive.php"
 HTTP_SEND_ENABLED = True
 HTTP_LOG_SEND_ENABLED = True
 WIFI_RECONNECT_INTERVAL_MS = 5000
@@ -27,7 +27,7 @@ WIFI_RECONNECT_INTERVAL_MS = 5000
 SD_SCK_PIN = 2
 SD_MOSI_PIN = 3
 SD_MISO_PIN = 4
-SD_CS_PIN = 16
+SD_CS_PIN = 5
 SD_BAUDRATE = 500000
 SD_MOUNT_POINT = "/sd"
 SD_DATA_FILENAME = "ground_data.txt"
@@ -40,17 +40,17 @@ SD_RECONNECT_INTERVAL_MS = 1000
 RFM_SCK_PIN = SD_SCK_PIN
 RFM_MOSI_PIN = SD_MOSI_PIN
 RFM_MISO_PIN = SD_MISO_PIN
-RFM_CS_PIN = 14
+RFM_CS_PIN = 6
 RFM_RST_PIN = 15
 RFM_SPI_ID = 0
 RFM_SPI_BAUDRATE = 50000
-RFM_FREQ_MHZ = 433.1
+RFM_FREQ_MHZ = 433.3
 RFM_BITRATE = 9600
 RFM_FREQ_DEVIATION = 19000
 RFM_RX_BW_REG = 0x43
 RFM_AFC_BW_REG = 0x42
 RFM_PREAMBLE_LENGTH = 8
-RFM_TX_POWER_DBM = 17
+RFM_TX_POWER_DBM = 20
 RFM_NODE_ID = 0xA6
 RFM_DESTINATION_ID = 0xCA
 RFM_ENCRYPTION_KEY = b"CANSAT2026RFM69!"
@@ -413,6 +413,49 @@ def compact_gps_text(gps):
     )
 
 
+def compact_bme_partial_text(env, bme):
+    if env is None and bme is None:
+        return "BME[ERR:missing_EB]"
+
+    if env is not None and env[5] != "1":
+        return "BME[ERR:rfm]"
+
+    if bme is not None and bme[2] != "1":
+        return "BME[ERR:rfm]"
+
+    return "BME[T={} P={} H={} G={}ohm A={} GV={}]".format(
+        scaled_text(env[9], 10, 1, "C") if env is not None else "None",
+        scaled_text(env[10], 10, 1, "hPa") if env is not None else "None",
+        scaled_text(env[11], 10, 1, "%") if env is not None else "None",
+        int_text(bme[3]) if bme is not None else "None",
+        scaled_text(bme[4], 10, 1, "m") if bme is not None else "None",
+        int_text(bme[5]) if bme is not None else "None",
+    )
+
+
+def compact_mpu_partial_text(accel, orientation):
+    if accel is None and orientation is None:
+        return "MPU[ERR:missing_AO]"
+
+    if accel is not None and accel[2] != "1":
+        return "MPU[ERR:rfm]"
+
+    if orientation is not None and orientation[2] != "1":
+        return "MPU[ERR:rfm]"
+
+    return "MPU[Ax={} Ay={} Az={} Gx={} Gy={} Gz={} Tmp={} Pit={} Rol={}]".format(
+        scaled_text(accel[3], 1000, 2, "g") if accel is not None else "None",
+        scaled_text(accel[4], 1000, 2, "g") if accel is not None else "None",
+        scaled_text(accel[5], 1000, 2, "g") if accel is not None else "None",
+        scaled_text(accel[6], 100, 2, "dps") if accel is not None else "None",
+        scaled_text(accel[7], 100, 2, "dps") if accel is not None else "None",
+        scaled_text(accel[8], 100, 2, "dps") if accel is not None else "None",
+        scaled_text(orientation[3], 10, 1, "C") if orientation is not None else "None",
+        scaled_text(orientation[4], 10, 1, "deg") if orientation is not None else "None",
+        scaled_text(orientation[5], 10, 1, "deg") if orientation is not None else "None",
+    )
+
+
 def reconstruct_compact_line(sample_id, parts):
     env = parts["E"]
     timestamp = decode_timestamp(env[2], env[3])
@@ -424,6 +467,31 @@ def reconstruct_compact_line(sample_id, parts):
         compact_mpu_text(parts["A"], parts["O"]),
         compact_mag_text(parts["C"]),
         compact_gps_text(parts["G"]),
+    )
+
+
+def missing_compact_types(parts):
+    missing = []
+    for packet_type in COMPACT_PACKET_TYPES:
+        if packet_type not in parts:
+            missing.append(packet_type)
+    return missing
+
+
+def reconstruct_partial_compact_line(sample_id, parts, missing):
+    env = parts.get("E")
+    timestamp = decode_timestamp(env[2], env[3]) if env is not None else "RTC_ERR"
+    missing_text = ",".join(missing) if missing else "none"
+
+    return "SID={} T={} PARTIAL[MISSING={}] {} {} {} {} {}".format(
+        sample_id,
+        timestamp,
+        missing_text,
+        compact_tmp_text(env) if env is not None else "TMP36[ERR:missing_E]",
+        compact_bme_partial_text(env, parts.get("B")),
+        compact_mpu_partial_text(parts.get("A"), parts.get("O")),
+        compact_mag_text(parts["C"]) if "C" in parts else "MAG[ERR:missing_C]",
+        compact_gps_text(parts["G"]) if "G" in parts else "GPS[ERR:missing_G]",
     )
 
 
@@ -451,11 +519,12 @@ def expire_compact_cache(compact_cache, max_age_ms=3000):
     expired = []
     for sample_id, entry in list(compact_cache.items()):
         if utime.ticks_diff(now_ms, entry["created_ms"]) >= max_age_ms:
-            missing = []
-            for packet_type in COMPACT_PACKET_TYPES:
-                if packet_type not in entry["parts"]:
-                    missing.append(packet_type)
-            expired.append((sample_id, ",".join(missing)))
+            missing = missing_compact_types(entry["parts"])
+            expired.append((
+                sample_id,
+                ",".join(missing),
+                reconstruct_partial_compact_line(sample_id, entry["parts"], missing),
+            ))
             compact_cache.pop(sample_id, None)
     return expired
 
@@ -650,6 +719,39 @@ def send_http_payload(line, payload_type="telemetry", source="ground_station", l
 
 def send_http_get(line):
     return send_http_payload(line, "telemetry", "ground_station", True)
+
+
+def send_partial_compact_line(sample_id, missing, line):
+    log_status("WARN", "RFM69", "DROP_PARTIAL id={} missing={}".format(sample_id, missing))
+
+    completed_line = completed_ids.get(sample_id)
+    if completed_line == line:
+        return False
+
+    if completed_line is not None and "PARTIAL[" not in completed_line:
+        return False
+
+    print(line)
+    send_http_get(line)
+    completed_ids[sample_id] = line
+    prune_completed_ids(completed_ids)
+    return True
+
+
+def drop_old_compact_entries(compact_cache, max_items=8):
+    if len(compact_cache) <= max_items:
+        return
+
+    for sample_id in list(compact_cache.keys())[:-max_items]:
+        entry = compact_cache.pop(sample_id, None)
+        if entry is None:
+            continue
+        missing = missing_compact_types(entry["parts"])
+        send_partial_compact_line(
+            sample_id,
+            ",".join(missing),
+            reconstruct_partial_compact_line(sample_id, entry["parts"], missing),
+        )
 
 
 # =========================
@@ -971,13 +1073,10 @@ while True:
                     prune_completed_ids(completed_ids)
                     compact_cache.pop(parsed["id"], None)
 
-                for expired_id, missing in expire_compact_cache(compact_cache):
-                    log_status("WARN", "RFM69", "DROP_PARTIAL id={} missing={}".format(expired_id, missing))
+                for expired_id, missing, partial_line in expire_compact_cache(compact_cache):
+                    send_partial_compact_line(expired_id, missing, partial_line)
 
-                if len(compact_cache) > 8:
-                    for key in list(compact_cache.keys())[:-8]:
-                        compact_cache.pop(key, None)
-                        completed_ids.pop(key, None)
+                drop_old_compact_entries(compact_cache)
             else:
                 line = apply_line_packet(line_cache, parsed)
                 if line is not None and completed_ids.get(parsed["id"]) != line:
@@ -1001,8 +1100,8 @@ while True:
         else:
             now_ms = utime.ticks_ms()
 
-            for expired_id, missing in expire_compact_cache(compact_cache):
-                log_status("WARN", "RFM69", "DROP_PARTIAL id={} missing={}".format(expired_id, missing))
+            for expired_id, missing, partial_line in expire_compact_cache(compact_cache):
+                send_partial_compact_line(expired_id, missing, partial_line)
 
             if rfm.last_error is not None and rfm.last_error != last_rfm_error:
                 log_status("WARN", "RFM69", str(rfm.last_error))
@@ -1028,4 +1127,6 @@ while True:
         log_status("ERROR", "MAIN", str(e))
 
     utime.sleep_ms(LOOP_DELAY_MS)
+
+
 
