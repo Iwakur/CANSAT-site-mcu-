@@ -21,7 +21,7 @@ WIFI_PASSWORD = "1234567890g"     #87102048
 SERVER_URL = "http://10.150.65.230/GitHub/CANSAT/Site/api/receive.php"
 HTTP_SEND_ENABLED = True
 HTTP_LOG_SEND_ENABLED = True
-WIFI_RECONNECT_INTERVAL_MS = 5000
+WIFI_RECONNECT_INTERVAL_MS = 30000
 
 # SD card SPI
 SD_SCK_PIN = 2
@@ -56,9 +56,9 @@ RFM_DESTINATION_ID = 0xCA
 RFM_ENCRYPTION_KEY = b"CANSAT2026RFM69!"
 
 # Main loop
-RFM_RECEIVE_TIMEOUT_MS = 1000
+RFM_RECEIVE_TIMEOUT_MS = 1500
 RFM_RECONNECT_INTERVAL_MS = 3000
-NO_PACKET_LOG_INTERVAL_MS = 3000
+NO_PACKET_LOG_INTERVAL_MS = 6000
 DEBUG_RFM = True
 DEBUG_HTTP = True
 DEBUG_SD = True
@@ -242,7 +242,7 @@ class GroundRFM69:
                 if not self.reconnect():
                     return None
 
-            packet = self.radio.receive(with_ack=True, timeout=timeout_ms / 1000)
+            packet = self.radio.receive(with_ack=False, timeout=timeout_ms / 1000)
             if packet is None:
                 self.ok = True
                 self.last_error = None
@@ -514,7 +514,7 @@ def apply_compact_packet(compact_cache, parsed):
     return reconstruct_compact_line(sample_id, entry["parts"])
 
 
-def expire_compact_cache(compact_cache, max_age_ms=3000):
+def expire_compact_cache(compact_cache, max_age_ms=6000):
     now_ms = utime.ticks_ms()
     expired = []
     for sample_id, entry in list(compact_cache.items()):

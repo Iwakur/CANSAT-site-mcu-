@@ -97,6 +97,7 @@ RFM_ACK_TIMEOUT_MS = 350
 RFM_ACK_RETRIES = 0
 RFM_ENCRYPTION_KEY = b"CANSAT2026RFM69!"
 RFM_MAX_PAYLOAD_BYTES = 60
+RFM_PACKET_GAP_MS = 500
 RFM_LOG_EVERY_SEND = True
 RFM_ACK_BLUE_BLINK_MS = 5
 DEBUG_TELEMETRY = True
@@ -104,7 +105,7 @@ DEBUG_TELEMETRY_EVERY_SAMPLES = 1
 RFM_STATUS_EVERY_SAMPLES = 1
 
 # Main loop
-LOOP_PERIOD_MS = 2000
+LOOP_PERIOD_MS = 5000
 SENSOR_RECONNECT_INTERVAL_MS = 30000
 RFM_RECONNECT_INTERVAL_MS = 10000
 
@@ -1322,7 +1323,7 @@ while True:
         if rfm_spi_restore_needed:
             restore_rfm_bus()
 
-        for packet in rfm_packets:
+        for packet_index, packet in enumerate(rfm_packets):
             rfm_tx_line = fit_rfm_payload(packet)
 
             if RFM_LOG_EVERY_SEND:
@@ -1351,6 +1352,9 @@ while True:
                 print(tx_fail_log)
                 queue_sd_log(tx_fail_log)
                 break
+
+            if packet_index < len(rfm_packets) - 1:
+                utime.sleep_ms(RFM_PACKET_GAP_MS)
 
         if all_rfm_ok:
             if not rfm_status_ok(rfm_was_ok):
