@@ -398,6 +398,122 @@ const CansatCharts = (() => {
     });
   }
 
+  function gpsPoints(rows) {
+    return (rows || [])
+      .map((row) => ({
+        lat: numericValue(row, "gps_lat"),
+        lon: numericValue(row, "gps_lon"),
+        fix: Number(row.gps_fix)
+      }))
+      .filter((point) => point.fix && point.lat !== null && point.lon !== null);
+  }
+
+  function renderGpsMap(rows, canvas, options = {}) {
+    if (!canvas) {
+      return;
+    }
+
+    const ctx = canvas.getContext("2d");
+    const rect = canvas.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    const width = Math.max(1, Math.floor(rect.width || canvas.clientWidth || 640));
+    const height = Math.max(1, Math.floor(rect.height || canvas.clientHeight || 280));
+    canvas.width = Math.floor(width * dpr);
+    canvas.height = Math.floor(height * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, width, height);
+
+    ctx.fillStyle = "#07090e";
+    ctx.fillRect(0, 0, width, height);
+    ctx.strokeStyle = "rgba(109, 182, 255, 0.22)";
+    ctx.lineWidth = 1;
+    for (let x = 0; x <= width; x += 48) {
+      ctx.beginPath();
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x, height);
+      ctx.stroke();
+    }
+    for (let y = 0; y <= height; y += 48) {
+      ctx.beginPath();
+      ctx.moveTo(0, y);
+      ctx.lineTo(width, y);
+      ctx.stroke();
+    }
+
+    ctx.strokeStyle = "rgba(246, 211, 109, 0.35)";
+    ctx.beginPath();
+    ctx.moveTo(width / 2 - 8, height / 2);
+    ctx.lineTo(width / 2 + 8, height / 2);
+    ctx.moveTo(width / 2, height / 2 - 8);
+    ctx.lineTo(width / 2, height / 2 + 8);
+    ctx.stroke();
+
+    const points = gpsPoints(rows);
+    if (!points.length) {
+      ctx.fillStyle = "#98a4b3";
+      ctx.font = "13px system-ui, sans-serif";
+      ctx.fillText("GPS map - waiting for fix", 16, 28);
+      return;
+    }
+
+    const latValues = points.map((point) => point.lat);
+    const lonValues = points.map((point) => point.lon);
+    let minLat = Math.min(...latValues);
+    let maxLat = Math.max(...latValues);
+    let minLon = Math.min(...lonValues);
+    let maxLon = Math.max(...lonValues);
+    if (minLat === maxLat) {
+      minLat -= 0.00001;
+      maxLat += 0.00001;
+    }
+    if (minLon === maxLon) {
+      minLon -= 0.00001;
+      maxLon += 0.00001;
+    }
+
+    const pad = 26;
+    const mapPoint = (point) => ({
+      x: pad + ((point.lon - minLon) / (maxLon - minLon)) * (width - pad * 2),
+      y: height - pad - ((point.lat - minLat) / (maxLat - minLat)) * (height - pad * 2)
+    });
+
+    if (options.trace !== false && points.length > 1) {
+      ctx.strokeStyle = "#6db6ff";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      points.forEach((point, index) => {
+        const mapped = mapPoint(point);
+        if (index === 0) {
+          ctx.moveTo(mapped.x, mapped.y);
+        } else {
+          ctx.lineTo(mapped.x, mapped.y);
+        }
+      });
+      ctx.stroke();
+    }
+
+    const current = options.currentRow ? gpsPoints([options.currentRow])[0] : points[points.length - 1];
+    if (current) {
+      const mapped = mapPoint(current);
+      ctx.fillStyle = "#f6d36d";
+      ctx.strokeStyle = "rgba(246, 211, 109, 0.35)";
+      ctx.lineWidth = 8;
+      ctx.beginPath();
+      ctx.arc(mapped.x, mapped.y, 6, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(mapped.x, mapped.y, 4, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    const last = current || points[points.length - 1];
+    ctx.fillStyle = "#dbe6f3";
+    ctx.font = "12px system-ui, sans-serif";
+    ctx.fillText(`${formatNumber(last.lat, 6)}, ${formatNumber(last.lon, 6)}`, 16, 28);
+    ctx.fillStyle = "#98a4b3";
+    ctx.fillText(`${points.length} GPS point${points.length === 1 ? "" : "s"}`, 16, 46);
+  }
+
   function setMessage(element, text, type = "") {
     if (!element) {
       return;
@@ -547,5 +663,5 @@ const CansatCharts = (() => {
     }
   }
 
-  return { render, renderSummary, setMessage, timeOnly, shortTime };
+  return { render, renderSummary, renderGpsMap, setMessage, timeOnly, shortTime };
 })();

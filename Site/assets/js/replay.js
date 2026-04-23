@@ -45,12 +45,12 @@ const replayState = {
   renderer: null,
   controls: null,
   craft: null,
-  modelHolder: null,
-  visualAltitude: 0
+  modelHolder: null
 };
 
 const ASSET_BASE = "assets/3d/";
 const DEG_TO_RAD = Math.PI / 180;
+const RAD_TO_DEG = 180 / Math.PI;
 
 function setReplayMessage(text, type = "") {
   if (!replayElements.message) {
@@ -68,6 +68,62 @@ function numericValue(value) {
 
   const number = Number(value);
   return Number.isFinite(number) ? number : null;
+}
+
+function normalizeHeadingDegrees(value) {
+  if (!Number.isFinite(value)) {
+    return null;
+  }
+
+  return ((value % 360) + 360) % 360;
+}
+
+function resolvePitchRoll(row) {
+  const pitch = numericValue(row && row.pitch);
+  const roll = numericValue(row && row.roll);
+
+  if (pitch !== null && roll !== null) {
+    return { pitch, roll };
+  }
+
+  const ax = numericValue(row && row.ax);
+  const ay = numericValue(row && row.ay);
+  const az = numericValue(row && row.az);
+
+  if (ax === null || ay === null || az === null) {
+    return {
+      pitch: pitch ?? 0,
+      roll: roll ?? 0
+    };
+  }
+
+  return {
+    pitch: Math.atan2(ax, Math.sqrt((ay * ay) + (az * az))) * RAD_TO_DEG,
+    roll: Math.atan2(ay, Math.sqrt((ax * ax) + (az * az))) * RAD_TO_DEG
+  };
+}
+
+function resolveHeading(row, pitchDeg, rollDeg) {
+  const magX = numericValue(row && row.mag_x);
+  const magY = numericValue(row && row.mag_y);
+  const magZ = numericValue(row && row.mag_z);
+
+  if (magX !== null && magY !== null && magZ !== null) {
+    const pitch = pitchDeg * DEG_TO_RAD;
+    const roll = rollDeg * DEG_TO_RAD;
+    const compensatedX = (magX * Math.cos(pitch)) + (magZ * Math.sin(pitch));
+    const compensatedY =
+      (magX * Math.sin(roll) * Math.sin(pitch)) +
+      (magY * Math.cos(roll)) -
+      (magZ * Math.sin(roll) * Math.cos(pitch));
+    const heading = normalizeHeadingDegrees(Math.atan2(compensatedY, compensatedX) * RAD_TO_DEG);
+
+    if (heading !== null) {
+      return heading;
+    }
+  }
+
+  return normalizeHeadingDegrees(numericValue(row && row.heading)) ?? 0;
 }
 
 function formatNumber(value, digits = 1) {
@@ -408,7 +464,6 @@ function normalizeLoadedModel(object) {
   const scale = 8 / largest;
   object.position.sub(center);
   object.scale.setScalar(scale);
-  object.rotation.x = -Math.PI / 2;
 }
 
 function loadModel() {
@@ -503,25 +558,13 @@ function applyModelState(row) {
     return;
   }
 
-  const pitch = numericValue(row && row.pitch) || 0;
-  const roll = numericValue(row && row.roll) || 0;
-  const heading = numericValue(row && row.heading) || 0;
-  const altitude = numericValue(row && row.bme_altitude) || 0;
-  const deltaAltitude = altitude - replayState.visualAltitude;
+  const attitude = resolvePitchRoll(row);
+  const pitch = attitude.pitch;
+  const roll = attitude.roll;
+  const heading = resolveHeading(row, pitch, roll);
 
   replayState.craft.rotation.set(pitch * DEG_TO_RAD, -heading * DEG_TO_RAD, roll * DEG_TO_RAD, "YXZ");
-  replayState.craft.position.y = altitude;
-
-  if (replayState.camera && Number.isFinite(deltaAltitude)) {
-    replayState.camera.position.y += deltaAltitude;
-  }
-
-  if (replayState.controls && Number.isFinite(deltaAltitude)) {
-    replayState.controls.target.y += deltaAltitude;
-    replayState.controls.update();
-  }
-
-  replayState.visualAltitude = altitude;
+  replayState.craft.position.set(0, 0, 0);
 }
 
 function createAttitudeMarker() {

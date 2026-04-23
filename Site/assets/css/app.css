@@ -454,6 +454,20 @@ button.danger {
   margin-top: 12px;
 }
 
+.gps-map-block {
+  height: 360px;
+  margin-top: 18px;
+}
+
+.gps-map-block canvas {
+  display: block;
+  width: 100%;
+  height: 292px;
+  border: 1px solid rgba(109, 182, 255, 0.18);
+  border-radius: 6px;
+  background: #07090e;
+}
+
 .chart-stats {
   display: grid;
   gap: 4px;

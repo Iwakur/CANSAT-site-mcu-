@@ -33,6 +33,11 @@ page_header('Live', 'live');
 
 <div id="charts"></div>
 
+<section class="chart-block gps-map-block">
+    <h2>GPS trace</h2>
+    <canvas id="liveGpsMap"></canvas>
+</section>
+
 <?php if (!$dbError): ?>
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <script>window.Chart || document.write('<script src="assets/vendor/chart.umd.min.js"><\/script>');</script>

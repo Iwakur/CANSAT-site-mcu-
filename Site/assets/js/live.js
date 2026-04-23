@@ -2,6 +2,7 @@ const liveCharts = {};
 const liveChartContainer = document.getElementById("charts");
 const liveMessage = document.getElementById("message");
 const liveStats = document.getElementById("liveStats");
+const liveGpsMap = document.getElementById("liveGpsMap");
 const clearButton = document.getElementById("clearLive");
 const rawToggle = document.getElementById("rawToggle");
 let liveRequestInFlight = false;
@@ -36,6 +37,7 @@ async function loadLive() {
 
     CansatCharts.setMessage(liveMessage, rows.length ? `Live dataset: ${rows.length} latest row(s).` : "Waiting for live telemetry.");
     CansatCharts.renderSummary(rows, meta, liveStats);
+    CansatCharts.renderGpsMap(rows, liveGpsMap);
 
     const showRaw = Boolean(rawToggle && rawToggle.checked);
     if (signature !== lastRenderedSignature || showRaw !== lastRenderedRawState) {
@@ -73,6 +75,7 @@ if (clearButton) {
     Object.keys(liveCharts).forEach((key) => delete liveCharts[key]);
     liveChartContainer.innerHTML = "";
     liveChartContainer.dataset.ready = "";
+    CansatCharts.renderGpsMap([], liveGpsMap);
     lastRenderedSignature = "";
     lastRenderedRawState = Boolean(rawToggle && rawToggle.checked);
     lastGoodRows = [];

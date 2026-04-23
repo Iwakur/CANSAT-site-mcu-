@@ -6,6 +6,7 @@ const deleteButton = document.getElementById("deleteDataset");
 const clearImportsButton = document.getElementById("clearImports");
 const savedStats = document.getElementById("savedStats");
 const chartContainer = document.getElementById("charts");
+const savedGpsMap = document.getElementById("savedGpsMap");
 const rawToggle = document.getElementById("rawToggle");
 const charts = {};
 let lastRows = [];
@@ -65,6 +66,7 @@ async function loadSelectedDataset() {
   const rows = data.rows || [];
   lastRows = rows;
   CansatCharts.renderSummary(rows, data.meta || {}, savedStats);
+  CansatCharts.renderGpsMap(rows, savedGpsMap);
   CansatCharts.setMessage(importMessage, rows.length ? "Dataset loaded." : "Dataset has no rows.");
   CansatCharts.render(rows, chartContainer, charts, importMessage, { showRaw: Boolean(rawToggle && rawToggle.checked) });
 }
@@ -143,6 +145,7 @@ deleteButton.addEventListener("click", async () => {
   Object.values(charts).forEach((chart) => chart.destroy());
   Object.keys(charts).forEach((key) => delete charts[key]);
   chartContainer.innerHTML = "";
+  CansatCharts.renderGpsMap([], savedGpsMap);
   await loadDatasets();
   await loadSelectedDataset();
 });
@@ -165,6 +168,7 @@ clearImportsButton.addEventListener("click", async () => {
   Object.values(charts).forEach((chart) => chart.destroy());
   Object.keys(charts).forEach((key) => delete charts[key]);
   chartContainer.innerHTML = "";
+  CansatCharts.renderGpsMap([], savedGpsMap);
   await loadDatasets();
   await loadSelectedDataset();
 });

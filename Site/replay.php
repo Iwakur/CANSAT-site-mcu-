@@ -79,8 +79,11 @@ page_header('Replay', 'replay');
 </section>
 
 <script src="https://cdn.jsdelivr.net/npm/three@0.128/build/three.min.js"></script>
+<script>window.THREE || document.write('<script src="assets/vendor/three.min.js"><\/script>');</script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128/examples/js/loaders/GLTFLoader.js"></script>
+<script>THREE.GLTFLoader || document.write('<script src="assets/vendor/GLTFLoader.js"><\/script>');</script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128/examples/js/controls/OrbitControls.js"></script>
+<script>THREE.OrbitControls || document.write('<script src="assets/vendor/OrbitControls.js"><\/script>');</script>
 <script src="assets/js/replay.js"></script>
 <?php endif; ?>
 <?php

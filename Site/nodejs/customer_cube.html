@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<title>MPU-6500 3D</title>
+</head>
+
+<body>
+
+<h2>Visualisation 3D MPU-6500</h2>
+
+<p>X: <span id="x">0</span></p>
+<p>Y: <span id="y">0</span></p>
+<p>Z: <span id="z">0</span></p>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+
+<script>
+// ===== SCENE 3D =====
+const scene = new THREE.Scene();
+
+const camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.1, 1000);
+camera.position.z = 3;
+
+const renderer = new THREE.WebGLRenderer();
+renderer.setSize(window.innerWidth, window.innerHeight);
+document.body.appendChild(renderer.domElement);
+
+// ===== OBJET =====
+const geometry = new THREE.BoxGeometry();
+const material = new THREE.MeshBasicMaterial({ color: 0x00ff00, wireframe: true });
+const cube = new THREE.Mesh(geometry, material);
+
+scene.add(cube);
+
+// ===== WEBSOCKET =====
+const ws = new WebSocket("ws://localhost:3000");
+
+ws.onmessage = (event) => {
+    const data = JSON.parse(event.data);
+
+    // Affichage texte
+    document.getElementById("x").textContent = data.x.toFixed(2);
+    document.getElementById("y").textContent = data.y.toFixed(2);
+    document.getElementById("z").textContent = data.z.toFixed(2);
+
+    // Rotation du cube
+    cube.rotation.x = data.x;
+    cube.rotation.y = data.y;
+    cube.rotation.z = data.z;
+};
+
+// ===== BOUCLE =====
+function animate() {
+    requestAnimationFrame(animate);
+    renderer.render(scene, camera);
+}
+
+animate();
+
+// ===== RESPONSIVE =====
+window.addEventListener('resize', () => {
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+});
+</script>
+
+</body>
+</html>

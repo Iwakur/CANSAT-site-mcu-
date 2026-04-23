@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>MPU6500 Temps réel</title>
+</head>
+<body>
+    <h1>Données MPU-6500</h1>
+
+    <p>X: <span id="x">0</span></p>
+    <p>Y: <span id="y">0</span></p>
+    <p>Z: <span id="z">0</span></p>
+
+    <script>
+        const ws = new WebSocket("ws://localhost:3000");
+
+        ws.onmessage = (event) => {
+            const data = JSON.parse(event.data);
+
+            document.getElementById("x").textContent = data.x.toFixed(2);
+            document.getElementById("y").textContent = data.y.toFixed(2);
+            document.getElementById("z").textContent = data.z.toFixed(2);
+        };
+    </script>
+</body>
+</html>

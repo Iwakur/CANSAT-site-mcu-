@@ -52,6 +52,11 @@ page_header('Import / Saved Data', 'import');
 
 <div id="charts"></div>
 
+<section class="chart-block gps-map-block">
+    <h2>GPS trace</h2>
+    <canvas id="savedGpsMap"></canvas>
+</section>
+
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <script>window.Chart || document.write('<script src="assets/vendor/chart.umd.min.js"><\/script>');</script>
 <script src="assets/js/charts.js"></script>
